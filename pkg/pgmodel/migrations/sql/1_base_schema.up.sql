@@ -177,7 +177,7 @@ CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.make_metric_table()
 DECLARE
   label_id INT;
 BEGIN
-   EXECUTE format('CREATE TABLE SCHEMA_DATA.%I(time TIMESTAMPTZ, value DOUBLE PRECISION, series_id INT)',
+   EXECUTE format('CREATE TABLE SCHEMA_DATA.%I(time TIMESTAMPTZ, value BIGINT, series_id INT)',
                     NEW.table_name);
    EXECUTE format('CREATE INDEX ON SCHEMA_DATA.%I (series_id, time) INCLUDE (value)',
                     NEW.table_name);
@@ -1143,7 +1143,7 @@ BEGIN
         CREATE OR REPLACE VIEW SCHEMA_METRIC.%1$I AS
         SELECT
             data.time as time,
-            data.value as value,
+            cast(data.value as DOUBLE PRECISION) / 1024.0 as value,
             data.series_id AS series_id,
             series.labels
             %2$s

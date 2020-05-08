@@ -190,7 +190,7 @@ func buildTimeSeries(rows pgx.Rows) ([]*prompb.TimeSeries, error) {
 			keys       []string
 			vals       []string
 			timestamps []time.Time
-			values     []float64
+			values     []int64
 		)
 		err := rows.Scan(&keys, &vals, &timestamps, &values)
 
@@ -227,7 +227,7 @@ func buildTimeSeries(rows pgx.Rows) ([]*prompb.TimeSeries, error) {
 		for i := range timestamps {
 			result.Samples = append(result.Samples, prompb.Sample{
 				Timestamp: toMilis(timestamps[i]),
-				Value:     values[i],
+				Value:     tofloat64(values[i]),
 			})
 		}
 
@@ -235,6 +235,15 @@ func buildTimeSeries(rows pgx.Rows) ([]*prompb.TimeSeries, error) {
 	}
 
 	return results, nil
+}
+
+func tofloat64(v int64) float64 {
+	if uint64(v)&0x3FF == 0 {
+		// no fractional component, use integer arithmetic
+		return float64(v / 1024)
+	} else {
+		return float64(v) / 1024.0
+	}
 }
 
 func buildMetricNameSeriesIDQuery(cases []string) string {

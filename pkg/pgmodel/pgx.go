@@ -145,10 +145,19 @@ func (t *SampleInfoIterator) Values() ([]interface{}, error) {
 	sample := info.samples[t.sampleIndex]
 	row := []interface{}{
 		model.Time(sample.Timestamp).Time(),
-		sample.Value,
+		toInt64(sample.Value),
 		info.seriesID,
 	}
 	return row, nil
+}
+
+func toInt64(v float64) int64 {
+	if float64(int64(v)) == v {
+		// no fractional component, use integer arithmetic
+		return int64(v) * 1024
+	} else {
+		return int64(v * 1024.0)
+	}
 }
 
 // Err returns any error that has been encountered by the CopyFromSource. If

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -532,10 +533,36 @@ func TestSQLQuery(t *testing.T) {
 					t.Fatalf("unexpected error returned:\ngot\n%s\nwanted\n%s", err, c.expectErr)
 				}
 
-				if !reflect.DeepEqual(resp, &c.expectResponse) {
-					t.Fatalf("unexpected response:\ngot\n%+v\nwanted\n%+v", resp, &c.expectResponse)
+				if len(resp.Results) != len(c.expectResponse.Results) {
+					t.Fatalf("unexpected response:\ngot len\n%+v %+v\nwanted\n%+v %+v", len(resp.Results), resp, len(c.expectResponse.Results), &c.expectResponse)
 				}
-
+				for i := 0; i < len(resp.Results); i++ {
+					r := resp.Results[i]
+					e := c.expectResponse.Results[i]
+					if len(r.Timeseries) != len(e.Timeseries) {
+						t.Fatalf("unexpected response:\ngot ts len\n%+v %+v\nwanted\n%+v %+v", len(r.Timeseries), resp, len(e.Timeseries), &c.expectResponse)
+					}
+					for j := 0; j < len(r.Timeseries); j++ {
+						rTs := r.Timeseries[j]
+						eTs := e.Timeseries[j]
+						if !reflect.DeepEqual(rTs.Labels, eTs.Labels) {
+							t.Fatalf("unexpected response:\ngot labels\n%+v\nwanted\n%+v", resp, &c.expectResponse)
+						}
+						if len(rTs.Samples) != len(eTs.Samples) {
+							t.Fatalf("unexpected response:\ngot s len\n%+v %+v\nwanted\n%+v %+v", len(rTs.Samples), resp, len(eTs.Samples), &c.expectResponse)
+						}
+						for k := 0; k < len(rTs.Samples); k++ {
+							rS := rTs.Samples[k]
+							eS := eTs.Samples[k]
+							if rS.Timestamp != eS.Timestamp {
+								t.Fatalf("unexpected response s:\ngot\n%+v %+v\nwanted\n%+v %+v", len(rTs.Samples), resp, len(eTs.Samples), &c.expectResponse)
+							}
+							if math.Abs(rS.Value-eS.Value) >= (1.0 / 1024.0) {
+								t.Fatalf("unexpected response v:\ngot\n%+v %+v\nwanted\n%+v %+v", len(rTs.Samples), resp, len(eTs.Samples), &c.expectResponse)
+							}
+						}
+					}
+				}
 			})
 		}
 	})
