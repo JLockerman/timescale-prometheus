@@ -265,56 +265,64 @@ func TestConcurrentInsert(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	withDB(t, *testDatabase, func(db *pgxpool.Pool, t testing.TB) {
+	withDB(t, *testDatabase, func(db *pgxpool.Pool, _ testing.TB) {
 		var wg sync.WaitGroup
 		for i := 0; i < 10; i++ {
+			t.Run(fmt.Sprintf("single metric simple insert %d", i), func(t *testing.T) {
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_%d", i))
+				}()
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_%d", i))
+				}()
+				wg.Wait()
+			})
+
+			t.Run(fmt.Sprintf("multi metric simple insert %d", i), func(t *testing.T) {
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_1_%d", i))
+				}()
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_2_%d", i))
+				}()
+				wg.Wait()
+			})
+		}
+
+		t.Run("many metrics and inserts", func(t *testing.T) {
+			for i := 0; i < 10; i++ {
+				j := i
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_multi_%d", j))
+				}()
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_multi_%d", j))
+				}()
+			}
+			wg.Wait()
+		})
+
+		t.Run("advanced insert", func(t *testing.T) {
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_%d", i))
+				testConcurrentInsertAdvanced(t, db)
 			}()
 			go func() {
 				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_%d", i))
+				testConcurrentInsertAdvanced(t, db)
 			}()
 			wg.Wait()
-
-			wg.Add(2)
-			go func() {
-				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_1_%d", i))
-			}()
-			go func() {
-				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_2_%d", i))
-			}()
-			wg.Wait()
-		}
-
-		for i := 0; i < 10; i++ {
-			j := i
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_multi_%d", j))
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				testConcurrentInsertSimple(t, db, fmt.Sprintf("metric_multi_%d", j))
-			}()
-		}
-		wg.Wait()
-
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			testConcurrentInsertAdvanced(t, db)
-		}()
-		go func() {
-			defer wg.Done()
-			testConcurrentInsertAdvanced(t, db)
-		}()
-		wg.Wait()
+		})
 	})
 }

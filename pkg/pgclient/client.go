@@ -25,6 +25,7 @@ type Config struct {
 	database         string
 	sslMode          string
 	dbConnectRetries int
+	ayncAcks         bool
 }
 
 // ParseFlags parses the configuration flags specific to PostgreSQL and TimescaleDB
@@ -36,6 +37,7 @@ func ParseFlags(cfg *Config) *Config {
 	flag.StringVar(&cfg.database, "db-name", "timescale", "The TimescaleDB database")
 	flag.StringVar(&cfg.sslMode, "db-ssl-mode", "disable", "The TimescaleDB connection ssl mode")
 	flag.IntVar(&cfg.dbConnectRetries, "db-connect-retries", 0, "How many times to retry connecting to the database")
+	flag.BoolVar(&cfg.ayncAcks, "async-acks", false, "Ack before data is written to DB")
 	return cfg
 }
 
@@ -71,7 +73,7 @@ func NewClient(cfg *Config) (*Client, error) {
 	metrics, _ := bigcache.NewBigCache(pgmodel.DefaultCacheConfig())
 	cache := &pgmodel.MetricNameCache{Metrics: metrics}
 
-	ingestor, err := pgmodel.NewPgxIngestorWithMetricCache(connectionPool, cache)
+	ingestor, err := pgmodel.NewPgxIngestorWithMetricCache(connectionPool, cache, cfg.ayncAcks)
 	if err != nil {
 		log.Error("err starting ingestor", err)
 		return nil, err

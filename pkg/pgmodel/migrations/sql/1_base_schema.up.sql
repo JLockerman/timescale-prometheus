@@ -4,7 +4,7 @@
 DO $$
     BEGIN
         CREATE ROLE prom_reader;
-    EXCEPTION WHEN duplicate_object THEN
+    EXCEPTION WHEN OTHERS THEN
         RAISE NOTICE 'role prom_reader already exists, skipping create';
         RETURN;
     END
@@ -12,7 +12,7 @@ $$;
 DO $$
     BEGIN
         CREATE ROLE prom_writer;
-    EXCEPTION WHEN duplicate_object THEN
+    EXCEPTION WHEN OTHERS THEN
         RAISE NOTICE 'role prom_writer already exists, skipping create';
         RETURN;
     END
@@ -221,16 +221,6 @@ BEGIN
             CONTINUE;
         END IF;
 
-        EXECUTE format($$
-            ALTER TABLE SCHEMA_DATA.%I SET (
-                timescaledb.compress,
-                timescaledb.compress_segmentby = 'series_id',
-                timescaledb.compress_orderby = 'time'
-            ); $$, r.table_name);
-
-        --chunks where the end time is before now()-1 hour will be compressed
-        PERFORM add_compress_chunks_policy(format('SCHEMA_DATA.%I', r.table_name), INTERVAL '1 hour');
-
         --do this before taking exclusive lock to minimize work after taking lock
         UPDATE SCHEMA_CATALOG.metric SET creation_completed = TRUE WHERE id = r.id;
 
@@ -286,6 +276,16 @@ BEGIN
             PRIMARY KEY(id)
         )
     $$, NEW.table_name, label_id, NEW.id);
+
+    EXECUTE format($$
+        ALTER TABLE SCHEMA_DATA.%I SET (
+            timescaledb.compress,
+            timescaledb.compress_segmentby = 'series_id',
+            timescaledb.compress_orderby = 'time'
+        ); $$, NEW.table_name);
+
+    --chunks where the end time is before now()-1 hour will be compressed
+    PERFORM add_compress_chunks_policy(format('SCHEMA_DATA.%I', NEW.table_name), INTERVAL '1 hour');
 
    RETURN NEW;
 END
@@ -1471,3 +1471,102 @@ CREATE VIEW SCHEMA_INFO.label AS
     ARRAY(SELECT value FROM SCHEMA_CATALOG.label l WHERE l.key = lk.key ORDER BY value)
       AS values
   FROM SCHEMA_CATALOG.label_key lk;
+
+
+----------------------------- Compression Utilities ----------------------------
+
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.chunk_for_time(ht_id INT, tm TIMESTAMPTZ)
+RETURNS TABLE (id INT, name TEXT, chunk_start TIMESTAMPTZ, chunk_end TIMESTAMPTZ) AS $func$
+    SELECT
+        c.id,
+        FORMAT('%s.%s', c.schema_name, c.table_name),
+        _timescaledb_internal.to_timestamp(ds.range_start),
+        _timescaledb_internal.to_timestamp(ds.range_end)
+    FROM (
+        SELECT id
+        FROM _timescaledb_catalog.dimension d
+        WHERE hypertable_id = ht_id
+        ORDER BY id
+        LIMIT 1) d
+    INNER JOIN _timescaledb_catalog.dimension_slice ds
+        ON ds.dimension_id = d.id
+    INNER JOIN _timescaledb_catalog.chunk_constraint cc
+        ON ds.id = cc.dimension_slice_id
+    INNER JOIN _timescaledb_catalog.chunk c
+        ON cc.chunk_id = c.id
+    WHERE _timescaledb_internal.to_unix_microseconds(tm) >= ds.range_start
+    AND _timescaledb_internal.to_unix_microseconds(tm) < ds.range_end
+    LIMIT 1;
+$func$
+LANGUAGE SQL;
+
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.ensure_compressed_chunk(
+  nspace TEXT, ht TEXT, tm TIMESTAMPTZ,
+  OUT compressed_chunk TEXT, OUT start_time TIMESTAMPTZ, OUT end_time TIMESTAMPTZ)
+AS $func$
+DECLARE
+    hypertable_row _timescaledb_catalog.hypertable;
+    uncompressed_chunk_table TEXT;
+    uncompressed_chunk_id INTEGER;
+    compressed_chunk_name TEXT;
+    cc _timescaledb_catalog.chunk;
+BEGIN
+   -- get our hypertable
+    SELECT h.* INTO STRICT hypertable_row
+    FROM _timescaledb_catalog.hypertable h
+    WHERE table_name = ht AND schema_name = nspace;
+
+    IF hypertable_row IS NULL THEN
+        RAISE EXCEPTION 'hypertable % not found', FORMAT('%I.%I', nspace, ht);
+    END IF;
+
+    -- ensure that the chunk exists by INSERTing a probe value
+    BEGIN
+        EXECUTE FORMAT('INSERT INTO %I.%I VALUES ($1, 01.0, 0)', nspace, ht) USING tm;
+        EXECUTE FORMAT('DELETE FROM %I.%I WHERE time = $1', nspace, ht) USING tm;
+    EXCEPTION
+        WHEN feature_not_supported THEN
+          -- chunk is already compressed
+    END;
+
+    SELECT id, name, chunk_start, chunk_end
+    INTO uncompressed_chunk_id, uncompressed_chunk_table, start_time, end_time
+    FROM chunk_for_time(hypertable_row.id, tm) chunk;
+
+    BEGIN
+        PERFORM compress_chunk(uncompressed_chunk_table);
+    EXCEPTION
+        WHEN duplicate_object THEN
+          -- chunk is already compressed
+    END;
+
+    SELECT FORMAT('%I.%I', compressed.schema_name, compressed.table_name)
+    INTO compressed_chunk
+    FROM _timescaledb_catalog.chunk uncompressed
+    INNER JOIN _timescaledb_catalog.chunk compressed
+        ON uncompressed.compressed_chunk_id = compressed.id
+    WHERE uncompressed.id = uncompressed_chunk_id;
+
+    RETURN;
+END;
+$func$
+LANGUAGE PLPGSQL VOLATILE;
+
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.ensure_compressed_chunks(
+  nspace TEXT, ht TEXT, tm TIMESTAMPTZ[],
+  OUT compressed_chunk TEXT[], OUT start_time TIMESTAMPTZ[], OUT end_time TIMESTAMPTZ[])
+AS $func$
+    SELECT
+        array_agg(compressed_chunk ORDER BY start_time),
+        array_agg(start_time ORDER BY start_time),
+        array_agg(end_time ORDER BY start_time)
+    FROM (
+        SELECT DISTINCT ON (compressed_chunk) compressed_chunk, start_time, end_time
+        FROM (
+            SELECT (ensure_compressed_chunk(nspace, ht, t)).*
+            FROM unnest(tm) t
+            ORDER BY t
+        ) c
+    )d;
+$func$
+LANGUAGE SQL VOLATILE;

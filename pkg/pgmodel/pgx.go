@@ -5,20 +5,30 @@
 package pgmodel
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/allegro/bigcache"
+	"github.com/google/btree"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgio"
+	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/timescale/timescale-prometheus/pkg/log"
 	"github.com/timescale/timescale-prometheus/pkg/prompb"
+
+	"github.com/timescale/timescale-prometheus/pkg/compression"
 )
 
 const (
@@ -36,12 +46,73 @@ const (
 	getCreateMetricsTableWithNewSQL = "SELECT table_name, possibly_new FROM " + catalogSchema + ".get_or_create_metric_table_name($1)"
 	finalizeMetricCreation          = "CALL " + catalogSchema + ".finalize_metric_creation()"
 	getSeriesIDForLabelSQL          = "SELECT * FROM " + catalogSchema + ".get_series_id_for_key_value_array($1, $2, $3)"
+	ensureChunksSql                 = "SELECT * FROM " + catalogSchema + ".ensure_compressed_chunks('" + dataSchema + "', $1, $2)"
 )
 
 var (
 	copyColumns         = []string{"time", "value", "series_id"}
 	errMissingTableName = fmt.Errorf("missing metric table name")
 )
+
+const (
+	// postgres time zero is Sat Jan 01 00:00:00 2000 UTC
+	// this is the offset of the unix epoch in microseconds from the postgres zero
+	PostgresUnixEpoch = -946684800000000
+	microsPerMs       = 1000
+)
+
+var (
+	postgresTimeInf    = Timestamptz{math.MaxInt64}
+	postgresTimeNegInf = Timestamptz{math.MinInt64}
+)
+
+func ToPostgresTime(tm model.Time) (pgTime Timestamptz, isInf bool) {
+	// this code is essentially
+	//     pgTime = int64(tm)*microsPerMs + PostgresUnixEpoch
+	// except with oveflow checks
+	ms := int64(tm)
+	if ms <= math.MaxInt64/microsPerMs {
+		ms *= microsPerMs
+		if ms > postgresTimeNegInf.Time-PostgresUnixEpoch {
+			return Timestamptz{ms + PostgresUnixEpoch}, false
+		}
+
+		return postgresTimeNegInf, true
+	}
+	// the PostgresUnixEpoch is negative, so maybe we can shrink the time
+	// into range? (ms must be positive here)
+	ms += PostgresUnixEpoch / microsPerMs
+	if ms < math.MaxInt64/microsPerMs {
+		return Timestamptz{ms * microsPerMs}, false
+	}
+
+	return postgresTimeInf, true
+}
+
+func FromPostgresTime(time Timestamptz) (promTime model.Time, isInf bool) {
+	if time == postgresTimeInf {
+		return model.Latest, true
+	} else if time == postgresTimeNegInf {
+		return model.Earliest, true
+	}
+
+	micros := time.Time
+	// this code is essentially
+	//   model.Time(tm/microsPerMs - PostgresUnixEpoch/microsPerMs)
+	// except with overflow checks
+	if micros < postgresTimeInf.Time+PostgresUnixEpoch {
+		return model.Time((micros - PostgresUnixEpoch) / microsPerMs), false
+	}
+
+	// maybe we can shrink it
+	ms := micros / microsPerMs
+	msEpoch := int64(PostgresUnixEpoch) / microsPerMs
+	if ms < math.MaxInt64+msEpoch {
+		return model.Time(ms - msEpoch), false
+	}
+
+	return model.Latest, true
+}
 
 type pgxBatch interface {
 	Queue(query string, arguments ...interface{})
@@ -159,13 +230,13 @@ func (t *SampleInfoIterator) Err() error {
 
 // NewPgxIngestorWithMetricCache returns a new Ingestor that uses connection pool and a metrics cache
 // for caching metric table names.
-func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache) (*DBIngestor, error) {
+func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache, asyncAcks bool) (*DBIngestor, error) {
 
 	conn := &pgxConnImpl{
 		conn: c,
 	}
 
-	pi, err := newPgxInserter(conn, cache)
+	pi, err := newPgxInserter(conn, cache, asyncAcks)
 	if err != nil {
 		return nil, err
 	}
@@ -186,16 +257,29 @@ func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache) (*DBInges
 func NewPgxIngestor(c *pgxpool.Pool) (*DBIngestor, error) {
 	metrics, _ := bigcache.NewBigCache(DefaultCacheConfig())
 	cache := &MetricNameCache{metrics}
-	return NewPgxIngestorWithMetricCache(c, cache)
+	return NewPgxIngestorWithMetricCache(c, cache, false)
 }
 
-func newPgxInserter(conn pgxConn, cache MetricCache) (*pgxInserter, error) {
+func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInserter, error) {
 	cmc := make(chan struct{}, 1)
 
 	inserter := &pgxInserter{
 		conn:                   conn,
 		metricTableNames:       cache,
 		completeMetricCreation: cmc,
+		asyncAcks:              asyncAcks,
+	}
+	if asyncAcks {
+		var dataPoints uint64
+		inserter.insertedDatapoints = &dataPoints
+		go func() {
+			log.Info("msg", "outputting throughpput info once every 10s")
+			tick := time.Tick(10 * time.Second)
+			for range tick {
+				inserted := atomic.SwapUint64(inserter.insertedDatapoints, 0)
+				log.Info("msg", "Samples write throughput", "samples/sec", inserted/10)
+			}
+		}()
 	}
 	//on startup run a completeMetricCreation to recover any potentially
 	//incomplete metric
@@ -214,6 +298,8 @@ type pgxInserter struct {
 	metricTableNames       MetricCache
 	inserters              sync.Map
 	completeMetricCreation chan struct{}
+	asyncAcks              bool
+	insertedDatapoints     *uint64
 }
 
 func (p *pgxInserter) CompleteMetricCreation() error {
@@ -260,7 +346,6 @@ type insertDataTask struct {
 func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) (uint64, error) {
 	var numRows uint64
 	workFinished := &sync.WaitGroup{}
-	sync := true
 	workFinished.Add(len(rows))
 	errChan := make(chan error, 1)
 	for metricName, data := range rows {
@@ -270,29 +355,52 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 		p.insertMetricData(metricName, data, workFinished, errChan)
 	}
 
-	var err error
-	if sync {
+	if !p.asyncAcks {
 		workFinished.Wait()
 		ctx.Close()
+		var err error
 		select {
 		case err = <-errChan:
 		default:
 		}
 		close(errChan)
+		return numRows, err
 	} else {
 		go func() {
 			workFinished.Wait()
 			ctx.Close()
+			var err error
+			select {
+			case err = <-errChan:
+			default:
+			}
 			close(errChan)
+			if err != nil {
+				log.Error("msg", "error on send", "error", err)
+			} else {
+				atomic.AddUint64(p.insertedDatapoints, numRows)
+			}
 		}()
 	}
-
-	return numRows, err
+	return numRows, nil
 }
 
 func (p *pgxInserter) insertMetricData(metric string, data []samplesInfo, finished *sync.WaitGroup, errChan chan error) {
 	inserter := p.getMetricInserter(metric, errChan)
 	inserter <- insertDataRequest{metric: metric, data: data, finished: finished, errChan: errChan}
+}
+
+func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
+	inserter, ok := p.inserters.Load(metric)
+	if !ok {
+		c := make(chan insertDataRequest, 1000)
+		actual, old := p.inserters.LoadOrStore(metric, c)
+		inserter = actual
+		if !old {
+			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames)
+		}
+	}
+	return inserter.(chan insertDataRequest)
 }
 
 func (p *pgxInserter) createMetricTable(metric string) (string, error) {
@@ -344,35 +452,155 @@ func (p *pgxInserter) getMetricTableName(metric string) (string, error) {
 	return tableName, err
 }
 
-func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
-	inserter, ok := p.inserters.Load(metric)
-	if !ok {
-		c := make(chan insertDataRequest, 1000)
-		actual, old := p.inserters.LoadOrStore(metric, c)
-		inserter = actual
-		if !old {
-			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames)
-		}
-	}
-	return inserter.(chan insertDataRequest)
-}
-
 type insertHandler struct {
 	conn            pgxConn
 	input           chan insertDataRequest
-	pending         *pendingBuffer
 	seriesCache     map[string]SeriesID
 	metricTableName string
+	chunks          *btree.BTree // stores *chunkInfo
+	timeout         *time.Timer
+	timoutSet       bool
+	samplesPending  int
+}
+
+type chunkInfo struct {
+	name      string
+	startTime Timestamptz
+	endTime   Timestamptz
+	pending   map[string]*seriesInfo
+}
+
+type seriesInsert struct {
+	table string
+	data  seriesInfo
+}
+
+type seriesInfo struct {
+	id      SeriesID
+	pending pendingBuffer
+	lastTs  Timestamptz
+	lastSeq int32
 }
 
 type pendingBuffer struct {
-	needsResponse []insertDataTask
-	batch         SampleInfoIterator
+	timestamps   []Timestamptz
+	dataPoints   []float64
+	creationTime time.Time
+	notify       []*finishedNotify
+}
+
+type finishedNotify struct {
+	onFinished   *sync.WaitGroup
+	numFragments int
+}
+
+type Timestamptz struct {
+	Time int64
+}
+
+func (tm Timestamptz) EncodeBinary(ci *pgtype.ConnInfo, buf []byte) ([]byte, error) {
+	return pgio.AppendInt64(buf, tm.Time), nil
+}
+
+func (dst *Timestamptz) DecodeBinary(ci *pgtype.ConnInfo, src []byte) error {
+	if src == nil {
+		panic("shouldn't have NULL timestamp")
+	}
+
+	if len(src) != 8 {
+		return fmt.Errorf("invalid length for timestamptz: %v", len(src))
+	}
+
+	dst.Time = int64(binary.BigEndian.Uint64(src))
+	return nil
+}
+
+type TimestamptzArray struct {
+	Values []Timestamptz
+}
+
+func (src TimestamptzArray) EncodeBinary(ci *pgtype.ConnInfo, buf []byte) ([]byte, error) {
+	arrayHeader := pgtype.ArrayHeader{
+		Dimensions:   []pgtype.ArrayDimension{{Length: int32(len(src.Values)), LowerBound: 1}},
+		ContainsNull: false,
+	}
+
+	if dt, ok := ci.DataTypeForName("timestamptz"); ok {
+		arrayHeader.ElementOID = int32(dt.OID)
+	} else {
+		return nil, errors.Errorf("unable to find oid for type name %v", "timestamptz")
+	}
+
+	buf = arrayHeader.EncodeBinary(ci, buf)
+
+	for i := range src.Values {
+		sp := len(buf)
+		buf = pgio.AppendInt32(buf, -1)
+
+		elemBuf, err := src.Values[i].EncodeBinary(ci, buf)
+		if err != nil {
+			return nil, err
+		}
+		if elemBuf != nil {
+			buf = elemBuf
+			pgio.SetInt32(buf[sp:], int32(len(buf[sp:])-4))
+		}
+	}
+
+	return buf, nil
+}
+
+type rawbinary struct {
+	bytes []byte
+}
+
+func (src rawbinary) EncodeBinary(ci *pgtype.ConnInfo, buf []byte) ([]byte, error) {
+	return append(buf, src.bytes...), nil
+}
+
+func (dst *TimestamptzArray) DecodeBinary(ci *pgtype.ConnInfo, src []byte) error {
+	if src == nil {
+		panic("should not have NULL")
+	}
+
+	var arrayHeader pgtype.ArrayHeader
+	rp, err := arrayHeader.DecodeBinary(ci, src)
+	if err != nil {
+		return err
+	}
+
+	if len(arrayHeader.Dimensions) != 1 {
+		return nil
+	}
+
+	elementCount := arrayHeader.Dimensions[0].Length
+	for _, d := range arrayHeader.Dimensions[1:] {
+		elementCount *= d.Length
+	}
+
+	elements := make([]Timestamptz, elementCount)
+
+	for i := range elements {
+		elemLen := int(int32(binary.BigEndian.Uint32(src[rp:])))
+		rp += 4
+		var elemSrc []byte
+		if elemLen >= 0 {
+			elemSrc = src[rp : rp+elemLen]
+			rp += elemLen
+		}
+		err = elements[i].DecodeBinary(ci, elemSrc)
+		if err != nil {
+			return err
+		}
+	}
+
+	*dst = TimestamptzArray{Values: elements}
+	return nil
 }
 
 const (
 	flushSize    = 2000
-	flushTimeout = 500 * time.Millisecond
+	flushTimeout = 100 * time.Millisecond
 )
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
@@ -450,114 +678,373 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 	handler := insertHandler{
 		conn:            conn,
 		input:           input,
-		pending:         &pendingBuffer{make([]insertDataTask, 0), NewSampleInfoIterator()},
+		chunks:          btree.New(8),
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
+		timeout:         time.NewTimer(flushTimeout),
+		timoutSet:       true,
 	}
 
 	for {
-		if !handler.hasPendingReqs() {
-			stillAlive := handler.blockingHandleReq()
-			if !stillAlive {
+
+		select {
+		case req, ok := <-handler.input:
+			if !ok {
 				return
 			}
-			continue
+			handler.handleReq(req)
+		case <-handler.timeout.C:
+			handler.timoutSet = false
+			handler.flushTimedOutBatches()
 		}
-
-	hotReceive:
-		for handler.nonblockingHandleReq() {
-			if len(handler.pending.batch.sampleInfos) >= flushSize {
-				break hotReceive
-			}
+		if handler.hasPendingReqs() && !handler.timoutSet {
+			handler.timeout.Reset(flushTimeout)
+			handler.timoutSet = true
 		}
-
-		handler.flush()
 	}
 }
 
 func (h *insertHandler) hasPendingReqs() bool {
-	return len(h.pending.batch.sampleInfos) > 0
+	return h.samplesPending > 0
 }
 
-func (h *insertHandler) blockingHandleReq() bool {
-	req, ok := <-h.input
-	if !ok {
-		return false
+func (h *insertHandler) handleReq(req insertDataRequest) {
+	//TODO I think we'll eventually want to batch different kinds of DB reqs together
+	h.setSeriesIds(&req)
+
+	onFinish := &finishedNotify{
+		//TODO error chan?
+		onFinished:   req.finished,
+		numFragments: 1,
+	}
+	missing, needsFlush := h.addSamples(req.data, onFinish)
+	if missing != nil {
+		h.ensureChunksFor(missing)
+		_, moreFlush := h.addSamples(req.data, onFinish)
+		needsFlush = append(needsFlush, moreFlush...)
 	}
 
-	h.handleReq(req)
+	onFinish.finishedFragment()
 
-	return true
-}
-
-func (h *insertHandler) nonblockingHandleReq() bool {
-	select {
-	case req := <-h.input:
-		h.handleReq(req)
-		return true
-	default:
-		return false
+	if needsFlush != nil {
+		h.compressAndflush(needsFlush)
 	}
 }
 
-func (h *insertHandler) handleReq(req insertDataRequest) bool {
-	needsFlush := h.pending.addReq(req)
-	if needsFlush {
-		h.flushPending(h.pending)
-		return true
-	}
-	return false
-}
-
-func (h *insertHandler) flush() {
-	if !h.hasPendingReqs() {
-		return
-	}
-	h.flushPending(h.pending)
-}
-
-func (h *insertHandler) flushPending(pending *pendingBuffer) {
-	err := func() error {
-		_, err := h.setSeriesIds(pending.batch.sampleInfos)
-		if err != nil {
-			return err
-		}
-
-		_, err = h.conn.CopyFrom(
-			context.Background(),
-			pgx.Identifier{dataSchema, h.metricTableName},
-			copyColumns,
-			&pending.batch,
-		)
-		return err
-	}()
-
-	for i := 0; i < len(pending.needsResponse); i++ {
-		if err != nil {
-			select {
-			case pending.needsResponse[i].errChan <- err:
-			default:
+func (h *insertHandler) flushTimedOutBatches() {
+	numToDelete := 0
+	var toFlush []seriesInsert
+	now := time.Now()
+	deleteOlderThan, _ := ToPostgresTime(model.TimeFromUnix(now.Add(-7 * 24 * time.Hour).Unix()))
+	canDeleteMore := true
+	h.chunks.Ascend(func(i btree.Item) bool {
+		empty := true
+		chunk := i.(*chunkInfo)
+		for k, series := range chunk.pending {
+			if series.pending.Len() == 0 {
+				continue
+			}
+			if now.Sub(series.pending.creationTime) >= 5*flushTimeout {
+				s := chunk.takeSeries(k, series)
+				toFlush = append(toFlush, s)
+			} else {
+				empty = false
 			}
 		}
-		pending.needsResponse[i].finished.Done()
-		pending.needsResponse[i] = insertDataTask{}
-	}
-	pending.needsResponse = pending.needsResponse[:0]
+		if !empty {
+			canDeleteMore = false
+		}
+		if canDeleteMore && chunk.endTime.Less(deleteOlderThan) {
+			numToDelete += 1
+		}
+		return true
+	})
 
-	for i := 0; i < len(pending.batch.sampleInfos); i++ {
-		// nil all pointers to prevent memory leaks
-		pending.batch.sampleInfos[i] = samplesInfo{}
+	for i := 0; i < numToDelete; i++ {
+		h.chunks.DeleteMin()
 	}
-	pending.batch = SampleInfoIterator{sampleInfos: pending.batch.sampleInfos[:0], sampleIndex: -1, sampleInfoIndex: 0}
+
+	if toFlush != nil {
+		h.compressAndflush(toFlush)
+	}
 }
 
-func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) {
+func (h *insertHandler) addSamples(samples []samplesInfo, onFinish *finishedNotify) (missingChunks map[Timestamptz]struct{}, needsFlush []seriesInsert) {
+	for d, data := range samples {
+		ensureSamplesAreSorted(data.samples)
+
+		var chunk *chunkInfo
+		i := 0
+		var samplesInMisingChunks []prompb.Sample
+		for i < len(data.samples) {
+			sample := data.samples[i]
+			timestamp, _ := ToPostgresTime(model.Time(sample.Timestamp))
+			if chunk == nil || chunk.endTime.Time <= timestamp.Time {
+				chunk = h.getChunkInfoFor(timestamp)
+			}
+
+			if chunk == nil {
+				if missingChunks == nil {
+					missingChunks = make(map[Timestamptz]struct{})
+				}
+				missingChunks[timestamp] = struct{}{}
+				samplesInMisingChunks = append(samplesInMisingChunks, sample)
+				i += 1
+				continue
+			}
+
+			//TODO if we put the series map on the ourside, we only have to look once
+			series := chunk.getSeriesInfoFor(data.labels, data.seriesID)
+			samplesAdded := series.pending.mergeInSamples(chunk.endTime, data.samples[i:])
+
+			series.pending.notify = append(series.pending.notify, onFinish)
+			onFinish.numFragments += 1
+
+			h.samplesPending += samplesAdded
+			i += samplesAdded
+
+			if len(series.pending.timestamps) > flushSize {
+				toFlush := chunk.takeSeries(data.labels.String(), series)
+				needsFlush = append(needsFlush, toFlush)
+			}
+		}
+		samples[d].samples = samplesInMisingChunks
+	}
+	return
+}
+
+func ensureSamplesAreSorted(samples []prompb.Sample) {
+	if !sort.SliceIsSorted(samples, func(i, j int) bool {
+		return samples[i].Timestamp < samples[j].Timestamp
+	}) {
+		sort.Slice(samples, func(i, j int) bool {
+			return samples[i].Timestamp < samples[j].Timestamp
+		})
+	}
+}
+
+func (h *insertHandler) getChunkInfoFor(time Timestamptz) (chunk *chunkInfo) {
+	h.chunks.AscendGreaterOrEqual(time, func(i btree.Item) bool {
+		info := i.(*chunkInfo)
+		if info.startTime.Time <= time.Time {
+			chunk = info
+		}
+		return false
+	})
+	return
+}
+
+func (c *chunkInfo) getSeriesInfoFor(series Labels, id SeriesID) *seriesInfo {
+	info, ok := c.pending[series.String()]
+	if !ok {
+		info = &seriesInfo{
+			id:     id,
+			lastTs: postgresTimeNegInf,
+			pending: pendingBuffer{
+				creationTime: time.Now(),
+			},
+		}
+		c.pending[series.String()] = info
+	} else if info.pending.Len() == 0 {
+		info.pending.creationTime = time.Now()
+	}
+	return info
+}
+
+func (c *chunkInfo) takeSeries(labels string, series *seriesInfo) seriesInsert {
+	if series.lastTs.Time > series.pending.timestamps[0].Time {
+		panic("TODO OoO inserts not yet implemented")
+	}
+
+	series.lastTs = series.pending.timestamps[len(series.pending.timestamps)-1]
+	series.lastSeq += 100
+
+	ret := *series
+	series.pending = pendingBuffer{}
+	return seriesInsert{c.name, ret}
+}
+
+func (p *pendingBuffer) mergeInSamples(endTime Timestamptz, samples []prompb.Sample) int {
+	firstSampleTime, _ := ToPostgresTime(model.Time(samples[0].Timestamp))
+	if p.Len() == 0 || firstSampleTime.Time >= p.timestamps[len(p.timestamps)-1].Time {
+		// all the new times are greater than the old times
+		i := 0
+		for _, sample := range samples {
+			time, _ := ToPostgresTime(model.Time(sample.Timestamp))
+			if time.Time >= endTime.Time {
+				break
+			}
+			p.timestamps = append(p.timestamps, time)
+			p.dataPoints = append(p.dataPoints, sample.Value)
+			i += 1
+		}
+		return i
+	}
+	// TODO switch to linear merge algo
+	i := 0
+	for _, sample := range samples {
+		time, _ := ToPostgresTime(model.Time(sample.Timestamp))
+		if time.Time >= endTime.Time {
+			break
+		}
+		p.timestamps = append(p.timestamps, time)
+		p.dataPoints = append(p.dataPoints, sample.Value)
+		i += 1
+	}
+	sort.Sort(p)
+	return i
+}
+
+func (p *pendingBuffer) Len() int {
+	return len(p.timestamps)
+}
+
+func (p *pendingBuffer) Less(i, j int) bool {
+	return p.timestamps[i].Time < p.timestamps[j].Time
+}
+
+func (p *pendingBuffer) Swap(i, j int) {
+	p.timestamps[i], p.timestamps[j] = p.timestamps[j], p.timestamps[i]
+	p.dataPoints[i], p.dataPoints[j] = p.dataPoints[j], p.dataPoints[i]
+}
+
+func (h *insertHandler) ensureChunksFor(times map[Timestamptz]struct{}) {
+	timestamps := make([]Timestamptz, 0, len(times))
+	for t := range times {
+		timestamps = append(timestamps, t)
+	}
+	rows, err := h.conn.Query(context.Background(), ensureChunksSql, h.metricTableName, TimestamptzArray{timestamps})
+	if err != nil {
+		//TODO
+		panic(err)
+	}
+	for rows.Next() {
+		var chunkNames []string
+		var chunkStartA TimestamptzArray
+		var chunkEndA TimestamptzArray
+		err = rows.Scan(&chunkNames, &chunkStartA, &chunkEndA)
+		if err != nil {
+			//TODO
+			panic(err)
+		}
+		chunkStart := chunkStartA.Values
+		chunkNames = chunkNames[:len(chunkStart)]
+		chunkEnd := chunkEndA.Values[:len(chunkStart)]
+		for i := 0; i < len(chunkStart); i++ {
+			chunk := &chunkInfo{
+				name:      chunkNames[i],
+				startTime: chunkStart[i],
+				endTime:   chunkEnd[i],
+				pending:   make(map[string]*seriesInfo),
+			}
+			old := h.chunks.ReplaceOrInsert(chunk)
+			if old != nil {
+				panic(old)
+			}
+		}
+	}
+}
+
+func (h *insertHandler) compressAndflush(inserts []seriesInsert) error {
+	if inserts == nil {
+		return nil
+	}
+	batch := h.conn.NewBatch()
+	for _, insert := range inserts {
+		h.samplesPending -= len(insert.data.pending.timestamps)
+		times, data, count, seqNum, minTime, maxTime := insert.data.prepareInsertRow()
+		batch.Queue("BEGIN;")
+		batch.Queue(fmt.Sprintf("INSERT INTO %s(time, value, series_id, _ts_meta_count, _ts_meta_sequence_num, _ts_meta_min_1, _ts_meta_max_1) VALUES ($1, $2, $3, $4, $5, $6, $7)", insert.table), times, data, insert.data.id, count, seqNum, minTime, maxTime)
+		batch.Queue("COMMIT;")
+	}
+
+	br, err := h.conn.SendBatch(context.Background(), batch)
+	if err != nil {
+		//TODO
+		panic(err)
+	}
+	defer br.Close()
+
+	for i := 0; i < len(inserts); i++ {
+		_, err = br.Exec()
+		if err != nil {
+			//TODO
+			panic(err)
+		}
+		_, err = br.Exec()
+		if err != nil {
+			//TODO
+			panic(err)
+		}
+		_, err = br.Exec()
+		if err != nil {
+			//TODO
+			panic(err)
+		}
+	}
+
+	for _, insert := range inserts {
+		insert.data.finishedFragment()
+	}
+
+	return nil
+}
+
+func (insert *seriesInfo) prepareInsertRow() (times rawbinary, data rawbinary, count int, seqNum int32, minTime Timestamptz, maxTime Timestamptz) {
+	// the series must already be sorted
+	minTime = insert.pending.timestamps[0]
+	maxTime = insert.pending.timestamps[len(insert.pending.timestamps)-1]
+	seqNum = insert.lastSeq
+	count = len(insert.pending.timestamps)
+	timeCompressor := compression.DeltaDeltaCompressor{}
+	for _, t := range insert.pending.timestamps {
+		timeCompressor.Append(uint64(t.Time))
+	}
+	timeBuf := bytes.Buffer{}
+	timeBuf.Grow(int(timeCompressor.CompressedLen()))
+	_, err := timeCompressor.WriteTo(&timeBuf)
+	if err != nil {
+		//TODO
+		panic(err)
+	}
+	times = rawbinary{timeBuf.Bytes()}
+
+	dataCompressor := compression.GorillaCompressor{}
+	for _, d := range insert.pending.dataPoints {
+		dataCompressor.Append(math.Float64bits(d))
+	}
+	dataBuf := bytes.Buffer{}
+	dataBuf.Grow(int(dataCompressor.CompressedLen()))
+	_, err = dataCompressor.WriteTo(&dataBuf)
+	if err != nil {
+		//TODO
+		panic(err)
+	}
+	data = rawbinary{dataBuf.Bytes()}
+	return
+}
+
+func (insert *seriesInfo) finishedFragment() {
+	notify := insert.pending.notify
+	for _, waiter := range notify {
+		waiter.finishedFragment()
+	}
+}
+
+func (waiter *finishedNotify) finishedFragment() {
+	waiter.numFragments -= 1
+	if waiter.numFragments == 0 {
+		waiter.onFinished.Done()
+	}
+}
+
+func (h *insertHandler) setSeriesIds(req *insertDataRequest) (string, error) {
 	numMissingSeries := 0
 
-	for i, series := range sampleInfos {
+	for i, series := range req.data {
 		id, ok := h.seriesCache[series.labels.String()]
 		if ok {
-			sampleInfos[i].seriesID = id
+			req.data[i].seriesID = id
 		} else {
 			numMissingSeries++
 		}
@@ -568,9 +1055,9 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 	}
 
 	seriesToInsert := make([]*samplesInfo, 0, numMissingSeries)
-	for i, series := range sampleInfos {
+	for i, series := range req.data {
 		if series.seriesID < 0 {
-			seriesToInsert = append(seriesToInsert, &sampleInfos[i])
+			seriesToInsert = append(seriesToInsert, &req.data[i])
 		}
 	}
 	var lastSeenLabel Labels
@@ -636,10 +1123,26 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 	return tableName, nil
 }
 
-func (p *pendingBuffer) addReq(req insertDataRequest) bool {
-	p.needsResponse = append(p.needsResponse, insertDataTask{finished: req.finished, errChan: req.errChan})
-	p.batch.sampleInfos = append(p.batch.sampleInfos, req.data...)
-	return len(p.batch.sampleInfos) > flushSize
+func (c *chunkInfo) Less(b btree.Item) bool {
+	switch v := b.(type) {
+	case *chunkInfo:
+		return c.startTime.Time < v.startTime.Time
+	case Timestamptz:
+		return c.endTime.Time <= v.Time
+	default:
+		panic("unknown type")
+	}
+}
+
+func (t Timestamptz) Less(b btree.Item) bool {
+	switch v := b.(type) {
+	case *chunkInfo:
+		return t.Time < v.startTime.Time
+	case Timestamptz:
+		return t.Time < v.Time
+	default:
+		panic(fmt.Sprintf("unknown type %v", v))
+	}
 }
 
 // NewPgxReaderWithMetricCache returns a new DBReader that reads from PostgreSQL using PGX

@@ -138,6 +138,8 @@ func init() {
 	writeThroughput.Start()
 }
 
+var printThrougput = true
+
 func main() {
 	cfg := parseFlags()
 	err := log.Init(cfg.logLevel)
@@ -350,8 +352,8 @@ func write(writer pgmodel.DBInserter) http.Handler {
 		writeThroughput.SetCurrent(getCounterValue(sentSamples))
 
 		select {
-		case d := <-writeThroughput.Values:
-			log.Info("msg", "Samples write throughput", "samples/sec", d)
+		case _ = <-writeThroughput.Values:
+			// log.Info("msg", "Samples write throughput", "samples/sec", d)
 		default:
 		}
 
