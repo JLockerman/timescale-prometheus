@@ -1,7 +1,6 @@
 package pgmodel
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -56,7 +55,6 @@ func (t *InsertCtx) NewLabels(length int) *Labels {
 func (t *InsertCtx) Close() {
 	newRefs := atomic.AddInt64(&t.refs, -1)
 	if newRefs == 0 {
-		fmt.Println("free InsertCtx")
 		t.clear()
 		pool.Put(t)
 	}

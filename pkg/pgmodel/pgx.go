@@ -758,7 +758,7 @@ func (h *insertHandler) flushTimedOutBatches() {
 		if canDeleteMore && chunk.endTime.Less(deleteOlderThan) {
 			numToDelete += 1
 		}
-		return true
+		return len(toFlush) < 5
 	})
 
 	for i := 0; i < numToDelete; i++ {
