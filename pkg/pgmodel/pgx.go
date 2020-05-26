@@ -745,7 +745,7 @@ func (h *insertHandler) flushTimedOutBatches() {
 			if series.pending.Len() == 0 {
 				continue
 			}
-			if now.Sub(series.pending.creationTime) >= 5*flushTimeout {
+			if now.Sub(series.pending.creationTime) >= flushTimeout {
 				s := chunk.takeSeries(k, series)
 				toFlush = append(toFlush, s)
 			} else {
