@@ -32,6 +32,10 @@ func (self *DeltaDeltaCompressor) Append(next_val uint64) {
 	self.deltaDelta.Append(encoded)
 }
 
+func (self *DeltaDeltaCompressor) NumVals() uint32 {
+	return self.deltaDelta.numElements + uint32(len(self.deltaDelta.uncompressedElements))
+}
+
 func zigZagEncode(value uint64) uint64 {
 	xor := uint64(0)
 	if int64(value) < 0 {

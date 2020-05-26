@@ -393,7 +393,7 @@ func (p *pgxInserter) insertMetricData(metric string, data []samplesInfo, finish
 func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
 	inserter, ok := p.inserters.Load(metric)
 	if !ok {
-		c := make(chan insertDataRequest, 10000)
+		c := make(chan insertDataRequest, 1000)
 		actual, old := p.inserters.LoadOrStore(metric, c)
 		inserter = actual
 		if !old {
@@ -483,8 +483,10 @@ type seriesInfo struct {
 }
 
 type pendingBuffer struct {
-	timestamps   []Timestamptz
-	dataPoints   []float64
+	timestamps   compression.DeltaDeltaCompressor
+	dataPoints   compression.GorillaCompressor
+	firstTs      Timestamptz
+	lastTs       Timestamptz
 	creationTime time.Time
 	notify       []*finishedNotify
 }
@@ -826,7 +828,7 @@ func (h *insertHandler) addSamples(samples []samplesInfo, onFinish *finishedNoti
 			h.samplesPending += samplesAdded
 			i += samplesAdded
 
-			if len(series.pending.timestamps) > flushSize {
+			if series.pending.timestamps.NumVals() > flushSize {
 				toFlush := chunk.takeSeries(data.labels.String(), series)
 				needsFlush = append(needsFlush, toFlush)
 			}
@@ -865,6 +867,8 @@ func (c *chunkInfo) getSeriesInfoFor(series Labels, id SeriesID) *seriesInfo {
 			lastTs: postgresTimeNegInf,
 			pending: pendingBuffer{
 				creationTime: time.Now(),
+				firstTs:      postgresTimeNegInf,
+				lastTs:       postgresTimeNegInf,
 			},
 		}
 		c.pending[series.String()] = info
@@ -875,11 +879,11 @@ func (c *chunkInfo) getSeriesInfoFor(series Labels, id SeriesID) *seriesInfo {
 }
 
 func (c *chunkInfo) takeSeries(labels string, series *seriesInfo) seriesInsert {
-	if series.lastTs.Time > series.pending.timestamps[0].Time {
+	if series.lastTs.Time > series.pending.firstTs.Time /*should be firstTs*/ {
 		panic("TODO OoO inserts not yet implemented")
 	}
 
-	series.lastTs = series.pending.timestamps[len(series.pending.timestamps)-1]
+	series.lastTs = series.pending.lastTs
 	series.lastSeq += 100
 
 	ret := *series
@@ -889,7 +893,7 @@ func (c *chunkInfo) takeSeries(labels string, series *seriesInfo) seriesInsert {
 
 func (p *pendingBuffer) mergeInSamples(endTime Timestamptz, samples []prompb.Sample) int {
 	firstSampleTime, _ := ToPostgresTime(model.Time(samples[0].Timestamp))
-	if p.Len() == 0 || firstSampleTime.Time >= p.timestamps[len(p.timestamps)-1].Time {
+	if p.Len() == 0 || firstSampleTime.Time >= p.lastTs.Time {
 		// all the new times are greater than the old times
 		i := 0
 		for _, sample := range samples {
@@ -897,40 +901,44 @@ func (p *pendingBuffer) mergeInSamples(endTime Timestamptz, samples []prompb.Sam
 			if time.Time >= endTime.Time {
 				break
 			}
-			p.timestamps = append(p.timestamps, time)
-			p.dataPoints = append(p.dataPoints, sample.Value)
+			if time.Time < p.firstTs.Time {
+				p.firstTs = time
+			}
+			p.lastTs = time
+			p.timestamps.Append(uint64(time.Time))
+			p.dataPoints.Append(math.Float64bits(sample.Value))
 			i += 1
 		}
 		return i
 	}
 	panic("OoO samples")
 	// TODO switch to linear merge algo
-	i := 0
-	for _, sample := range samples {
-		time, _ := ToPostgresTime(model.Time(sample.Timestamp))
-		if time.Time >= endTime.Time {
-			break
-		}
-		p.timestamps = append(p.timestamps, time)
-		p.dataPoints = append(p.dataPoints, sample.Value)
-		i += 1
-	}
-	sort.Sort(p)
-	return i
+	// i := 0
+	// for _, sample := range samples {
+	// 	time, _ := ToPostgresTime(model.Time(sample.Timestamp))
+	// 	if time.Time >= endTime.Time {
+	// 		break
+	// 	}
+	// 	p.timestamps = append(p.timestamps, time)
+	// 	p.dataPoints = append(p.dataPoints, sample.Value)
+	// 	i += 1
+	// }
+	// sort.Sort(p)
+	// return i
 }
 
 func (p *pendingBuffer) Len() int {
-	return len(p.timestamps)
+	return int(p.timestamps.NumVals())
 }
 
-func (p *pendingBuffer) Less(i, j int) bool {
-	return p.timestamps[i].Time < p.timestamps[j].Time
-}
+// func (p *pendingBuffer) Less(i, j int) bool {
+// 	return p.timestamps[i].Time < p.timestamps[j].Time
+// }
 
-func (p *pendingBuffer) Swap(i, j int) {
-	p.timestamps[i], p.timestamps[j] = p.timestamps[j], p.timestamps[i]
-	p.dataPoints[i], p.dataPoints[j] = p.dataPoints[j], p.dataPoints[i]
-}
+// func (p *pendingBuffer) Swap(i, j int) {
+// 	p.timestamps[i], p.timestamps[j] = p.timestamps[j], p.timestamps[i]
+// 	p.dataPoints[i], p.dataPoints[j] = p.dataPoints[j], p.dataPoints[i]
+// }
 
 func (h *insertHandler) ensureChunksFor(times map[Timestamptz]struct{}) {
 	timestamps := make([]Timestamptz, 0, len(times))
@@ -975,7 +983,7 @@ func (h *insertHandler) compressAndflush(inserts []seriesInsert) error {
 	}
 	batch := h.conn.NewBatch()
 	for _, insert := range inserts {
-		h.samplesPending -= len(insert.data.pending.timestamps)
+		h.samplesPending -= int(insert.data.pending.timestamps.NumVals())
 		// fmt.Println(len(insert.data.pending.timestamps))
 		times, data, count, seqNum, minTime, maxTime := insert.data.prepareInsertRow()
 		batch.Queue("BEGIN;")
@@ -1017,30 +1025,22 @@ func (h *insertHandler) compressAndflush(inserts []seriesInsert) error {
 
 func (insert *seriesInfo) prepareInsertRow() (times rawbinary, data rawbinary, count int, seqNum int32, minTime Timestamptz, maxTime Timestamptz) {
 	// the series must already be sorted
-	minTime = insert.pending.timestamps[0]
-	maxTime = insert.pending.timestamps[len(insert.pending.timestamps)-1]
+	minTime = insert.pending.firstTs
+	maxTime = insert.pending.lastTs
 	seqNum = insert.lastSeq
-	count = len(insert.pending.timestamps)
-	timeCompressor := compression.DeltaDeltaCompressor{}
-	for _, t := range insert.pending.timestamps {
-		timeCompressor.Append(uint64(t.Time))
-	}
+	count = int(insert.pending.timestamps.NumVals())
 	timeBuf := bytes.Buffer{}
-	timeBuf.Grow(int(timeCompressor.CompressedLen()))
-	_, err := timeCompressor.WriteTo(&timeBuf)
+	timeBuf.Grow(int(insert.pending.timestamps.CompressedLen()))
+	_, err := insert.pending.timestamps.WriteTo(&timeBuf)
 	if err != nil {
 		//TODO
 		panic(err)
 	}
 	times = rawbinary{timeBuf.Bytes()}
 
-	dataCompressor := compression.GorillaCompressor{}
-	for _, d := range insert.pending.dataPoints {
-		dataCompressor.Append(math.Float64bits(d))
-	}
 	dataBuf := bytes.Buffer{}
-	dataBuf.Grow(int(dataCompressor.CompressedLen()))
-	_, err = dataCompressor.WriteTo(&dataBuf)
+	dataBuf.Grow(int(insert.pending.dataPoints.CompressedLen()))
+	_, err = insert.pending.dataPoints.WriteTo(&dataBuf)
 	if err != nil {
 		//TODO
 		panic(err)
