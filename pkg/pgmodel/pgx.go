@@ -744,7 +744,7 @@ func (h *insertHandler) handleReq(req insertDataRequest) {
 
 func (h *insertHandler) flushTimedOutBatches() bool {
 	numToDelete := 0
-	toFlush := make([]seriesInsert, 0, 10)
+	var toFlush []seriesInsert
 	now := time.Now()
 	deleteOlderThan, _ := ToPostgresTime(model.TimeFromUnix(now.Add(-7 * 24 * time.Hour).Unix()))
 	canDeleteMore := true
@@ -757,12 +757,13 @@ func (h *insertHandler) flushTimedOutBatches() bool {
 				continue
 			}
 			if now.Sub(series.pending.creationTime) >= flushTimeout {
-				if len(toFlush) < 10 {
-					toFlush = append(toFlush, chunk.takeSeries(k, series))
-				} else {
-					hasMoreTimedOut = true
-					empty = false
-				}
+				// if len(toFlush) < 10 {
+				// 	toFlush = append(toFlush, chunk.takeSeries(k, series))
+				// } else {
+				// 	hasMoreTimedOut = true
+				// 	empty = false
+				// }
+				toFlush = append(toFlush, chunk.takeSeries(k, series))
 			} else {
 				empty = false
 			}
@@ -780,9 +781,9 @@ func (h *insertHandler) flushTimedOutBatches() bool {
 		h.chunks.DeleteMin()
 	}
 
-	if hasMoreTimedOut && len(toFlush) == 0 {
-		panic("not flushing")
-	}
+	// if hasMoreTimedOut && len(toFlush) == 0 {
+	// 	panic("not flushing")
+	// }
 
 	if len(toFlush) > 0 {
 		h.compressAndflush(toFlush)
