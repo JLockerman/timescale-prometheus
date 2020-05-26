@@ -336,6 +336,7 @@ type insertDataRequest struct {
 	data     []samplesInfo
 	finished *sync.WaitGroup
 	errChan  chan error
+	ctx      *InsertCtx
 }
 
 type insertDataTask struct {
@@ -347,17 +348,17 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	var numRows uint64
 	workFinished := &sync.WaitGroup{}
 	workFinished.Add(len(rows))
+	ctx.refs = int64(len(rows))
 	errChan := make(chan error, 1)
 	for metricName, data := range rows {
 		for _, si := range data {
 			numRows += uint64(len(si.samples))
 		}
-		p.insertMetricData(metricName, data, workFinished, errChan)
+		p.insertMetricData(metricName, data, workFinished, errChan, ctx)
 	}
 
 	if !p.asyncAcks {
 		workFinished.Wait()
-		ctx.Close()
 		var err error
 		select {
 		case err = <-errChan:
@@ -368,7 +369,6 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	} else {
 		go func() {
 			workFinished.Wait()
-			ctx.Close()
 			var err error
 			select {
 			case err = <-errChan:
@@ -385,9 +385,9 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	return numRows, nil
 }
 
-func (p *pgxInserter) insertMetricData(metric string, data []samplesInfo, finished *sync.WaitGroup, errChan chan error) {
+func (p *pgxInserter) insertMetricData(metric string, data []samplesInfo, finished *sync.WaitGroup, errChan chan error, ctx *InsertCtx) {
 	inserter := p.getMetricInserter(metric, errChan)
-	inserter <- insertDataRequest{metric: metric, data: data, finished: finished, errChan: errChan}
+	inserter <- insertDataRequest{metric: metric, data: data, finished: finished, errChan: errChan, ctx: ctx}
 }
 
 func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
@@ -723,6 +723,7 @@ func (h *insertHandler) handleReq(req insertDataRequest) {
 		_, moreFlush := h.addSamples(req.data, onFinish)
 		needsFlush = append(needsFlush, moreFlush...)
 	}
+	req.ctx.Close()
 
 	onFinish.finishedFragment()
 

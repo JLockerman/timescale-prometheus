@@ -2,6 +2,7 @@ package pgmodel
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/timescale/timescale-prometheus/pkg/prompb"
 )
@@ -15,6 +16,7 @@ var pool = sync.Pool{
 type InsertCtx struct {
 	WriteRequest prompb.WriteRequest
 	Labels       []Labels
+	refs         int64
 }
 
 func NewInsertCtx() *InsertCtx {
@@ -51,6 +53,9 @@ func (t *InsertCtx) NewLabels(length int) *Labels {
 }
 
 func (t *InsertCtx) Close() {
-	t.clear()
-	pool.Put(t)
+	newRefs := atomic.AddInt64(&t.refs, -1)
+	if newRefs == 0 {
+		t.clear()
+		pool.Put(t)
+	}
 }
