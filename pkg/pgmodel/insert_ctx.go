@@ -24,17 +24,27 @@ func NewInsertCtx() *InsertCtx {
 }
 
 func (t *InsertCtx) clear() {
-	for _, ts := range t.WriteRequest.Timeseries {
+	for i := range t.WriteRequest.Timeseries {
+		ts := &t.WriteRequest.Timeseries[i]
 		ts.Labels = ts.Labels[:0]
 		ts.Samples = ts.Samples[:0]
 	}
 	t.WriteRequest.Timeseries = t.WriteRequest.Timeseries[:0]
+	for i := range t.Labels {
+		resetLabels(&t.Labels[i])
+	}
 	t.Labels = t.Labels[:0]
 }
 
-func (t *InsertCtx) resetLabels(l *Labels) {
+func resetLabels(l *Labels) {
 	l.metricName = ""
+	for i := range l.names {
+		l.names[i] = ""
+	}
 	l.names = l.names[:0]
+	for i := range l.values {
+		l.values[i] = ""
+	}
 	l.values = l.values[:0]
 	l.str = ""
 }
@@ -42,7 +52,6 @@ func (t *InsertCtx) resetLabels(l *Labels) {
 func (t *InsertCtx) NewLabels(length int) *Labels {
 	if len(t.Labels) < cap(t.Labels) {
 		t.Labels = t.Labels[:len(t.Labels)+1]
-		t.resetLabels(&t.Labels[len(t.Labels)-1])
 	} else {
 		t.Labels = append(t.Labels, Labels{
 			names:  make([]string, 0, length),
