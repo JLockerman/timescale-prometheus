@@ -695,7 +695,17 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 			handler.handleReq(req)
 		case <-handler.timeout.C:
 			handler.timoutSet = false
-			handler.flushTimedOutBatches()
+			for handler.flushTimedOutBatches() {
+			hot:
+				for i := 0; i < 1000; i++ {
+					select {
+					case req := <-handler.input:
+						handler.handleReq(req)
+					default:
+						break hot
+					}
+				}
+			}
 		}
 		if handler.hasPendingReqs() && !handler.timoutSet {
 			handler.timeout.Reset(flushTimeout)
@@ -732,12 +742,13 @@ func (h *insertHandler) handleReq(req insertDataRequest) {
 	}
 }
 
-func (h *insertHandler) flushTimedOutBatches() {
+func (h *insertHandler) flushTimedOutBatches() bool {
 	numToDelete := 0
-	var toFlush []seriesInsert
+	var toFlush seriesInsert
 	now := time.Now()
 	deleteOlderThan, _ := ToPostgresTime(model.TimeFromUnix(now.Add(-7 * 24 * time.Hour).Unix()))
 	canDeleteMore := true
+	hasMoreTimedOut := false
 	h.chunks.Ascend(func(i btree.Item) bool {
 		empty := true
 		chunk := i.(*chunkInfo)
@@ -746,8 +757,12 @@ func (h *insertHandler) flushTimedOutBatches() {
 				continue
 			}
 			if now.Sub(series.pending.creationTime) >= flushTimeout {
-				s := chunk.takeSeries(k, series)
-				toFlush = append(toFlush, s)
+				if len(toFlush.data.pending.timestamps) == 0 {
+					toFlush = chunk.takeSeries(k, series)
+				} else {
+					hasMoreTimedOut = true
+					empty = false
+				}
 			} else {
 				empty = false
 			}
@@ -758,16 +773,22 @@ func (h *insertHandler) flushTimedOutBatches() {
 		if canDeleteMore && chunk.endTime.Less(deleteOlderThan) {
 			numToDelete += 1
 		}
-		return len(toFlush) < 5
+		return !hasMoreTimedOut
 	})
 
 	for i := 0; i < numToDelete; i++ {
 		h.chunks.DeleteMin()
 	}
 
-	if toFlush != nil {
-		h.compressAndflush(toFlush)
+	if hasMoreTimedOut && len(toFlush.data.pending.timestamps) == 0 {
+		panic("not flushing")
 	}
+
+	if len(toFlush.data.pending.timestamps) != 0 {
+		h.compressAndflush([]seriesInsert{toFlush})
+	}
+
+	return hasMoreTimedOut
 }
 
 func (h *insertHandler) addSamples(samples []samplesInfo, onFinish *finishedNotify) (missingChunks map[Timestamptz]struct{}, needsFlush []seriesInsert) {
