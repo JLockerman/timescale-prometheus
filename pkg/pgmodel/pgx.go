@@ -879,9 +879,9 @@ func (c *chunkInfo) getSeriesInfoFor(series Labels, id SeriesID) *seriesInfo {
 }
 
 func (c *chunkInfo) takeSeries(labels string, series *seriesInfo) seriesInsert {
-	if series.lastTs.Time > series.pending.firstTs.Time /*should be firstTs*/ {
-		panic("TODO OoO inserts not yet implemented")
-	}
+	// if series.lastTs.Time > series.pending.firstTs.Time /*should be firstTs*/ {
+	// 	panic("TODO OoO inserts not yet implemented")
+	// }
 
 	series.lastTs = series.pending.lastTs
 	series.lastSeq += 100
