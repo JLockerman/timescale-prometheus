@@ -600,7 +600,7 @@ func (dst *TimestamptzArray) DecodeBinary(ci *pgtype.ConnInfo, src []byte) error
 
 const (
 	flushSize    = 2000
-	flushTimeout = 100 * time.Millisecond
+	flushTimeout = 10 * time.Millisecond
 )
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
@@ -953,7 +953,7 @@ func (h *insertHandler) compressAndflush(inserts []seriesInsert) error {
 	batch := h.conn.NewBatch()
 	for _, insert := range inserts {
 		h.samplesPending -= len(insert.data.pending.timestamps)
-		fmt.Println(len(insert.data.pending.timestamps))
+		// fmt.Println(len(insert.data.pending.timestamps))
 		times, data, count, seqNum, minTime, maxTime := insert.data.prepareInsertRow()
 		batch.Queue("BEGIN;")
 		batch.Queue(fmt.Sprintf("INSERT INTO %s(time, value, series_id, _ts_meta_count, _ts_meta_sequence_num, _ts_meta_min_1, _ts_meta_max_1) VALUES ($1, $2, $3, $4, $5, $6, $7)", insert.table), times, data, insert.data.id, count, seqNum, minTime, maxTime)
