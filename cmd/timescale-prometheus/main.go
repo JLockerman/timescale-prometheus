@@ -14,6 +14,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -186,7 +187,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer client.Close()
-
+	runtime.SetBlockProfileRate(100000)
 	http.Handle("/write", timeHandler(httpRequestDuration, "write", write(client)))
 	http.Handle("/read", timeHandler(httpRequestDuration, "read", read(client)))
 	http.Handle("/healthz", health(client))
