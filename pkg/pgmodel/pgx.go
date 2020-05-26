@@ -600,7 +600,7 @@ func (dst *TimestamptzArray) DecodeBinary(ci *pgtype.ConnInfo, src []byte) error
 
 const (
 	flushSize    = 2000
-	flushTimeout = 100 * time.Millisecond
+	flushTimeout = 1000 * time.Millisecond
 )
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
