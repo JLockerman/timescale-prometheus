@@ -600,7 +600,7 @@ func (dst *TimestamptzArray) DecodeBinary(ci *pgtype.ConnInfo, src []byte) error
 
 const (
 	flushSize    = 2000
-	flushTimeout = 1000 * time.Millisecond
+	flushTimeout = 10 * time.Millisecond
 )
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
@@ -903,6 +903,7 @@ func (p *pendingBuffer) mergeInSamples(endTime Timestamptz, samples []prompb.Sam
 		}
 		return i
 	}
+	panic("OoO samples")
 	// TODO switch to linear merge algo
 	i := 0
 	for _, sample := range samples {
