@@ -17,8 +17,7 @@ import (
 
 // Labels stores a labels.Labels in its canonical string representation
 type Labels struct {
-	names      []string
-	values     []string
+	labels     []prompb.Label
 	metricName string
 	str        string
 }
@@ -30,16 +29,11 @@ func EmptyLables() Labels {
 
 // LabelsFromSlice converts a labels.Labels to a Labels object
 func LabelsFromSlice(ls labels.Labels) (Labels, error) {
-	length := len(ls)
-	labels := Labels{
-		names:  make([]string, length),
-		values: make([]string, length),
-	}
+	panic("TODO")
+	labels := Labels{}
 
 	labels.metricName = ""
-	for i, l := range ls {
-		labels.names[i] = l.Name
-		labels.values[i] = l.Value
+	for _, l := range ls {
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
@@ -56,12 +50,11 @@ func initLabels(l *Labels) error {
 		sort.Sort(l)
 	}
 
-	length := len(l.names)
-	vals := l.values[:length]
-
+	length := len(l.labels)
 	expectedStrLen := length * 4 // 2 for the length of each key, and 2 for the lengthof each value
 	for i := 0; i < length; i++ {
-		expectedStrLen += len(l.names[i]) + len(vals[i])
+		l := l.labels[i]
+		expectedStrLen += len(l.Name) + len(l.Value)
 	}
 
 	// BigCache cannot handle cases where the key string has a size greater than
@@ -81,7 +74,8 @@ func initLabels(l *Labels) error {
 
 	lengthBuf := make([]byte, 2)
 	for i := 0; i < length; i++ {
-		key := l.names[i]
+		l := l.labels[i]
+		key := l.Name
 
 		// this cast is safe since we check that the combined length of all the
 		// strings fit within a uint16, each string's length must also fit
@@ -90,7 +84,7 @@ func initLabels(l *Labels) error {
 		builder.WriteByte(lengthBuf[1])
 		builder.WriteString(key)
 
-		val := vals[i]
+		val := l.Value
 
 		// this cast is safe since we check that the combined length of all the
 		// strings fit within a uint16, each string's length must also fit
@@ -108,12 +102,11 @@ func initLabels(l *Labels) error {
 func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
 	length := len(labelPairs)
 	labels := NewLabels(length)
+	copy(labels.labels, labelPairs)
 
 	labels.metricName = ""
 
-	for i, l := range labelPairs {
-		labels.names[i] = l.Name
-		labels.values[i] = l.Value
+	for _, l := range labelPairs {
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
@@ -125,7 +118,7 @@ func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
 }
 
 func (l *Labels) isEmpty() bool {
-	return l.names == nil
+	return l.labels == nil
 }
 
 func (l *Labels) String() string {
@@ -134,14 +127,10 @@ func (l *Labels) String() string {
 
 func (l *Labels) reset() {
 	l.metricName = ""
-	for i := range l.names {
-		l.names[i] = ""
+	for i := range l.labels {
+		l.labels[i] = prompb.Label{}
 	}
-	l.names = l.names[:0]
-	for i := range l.values {
-		l.values[i] = ""
-	}
-	l.values = l.values[:0]
+	l.labels = l.labels[:0]
 	l.str = ""
 }
 
@@ -158,19 +147,19 @@ func (l *Labels) Equal(b *Labels) bool {
 // Labels implements sort.Interface
 
 func (l *Labels) Len() int {
-	return len(l.names)
+	return len(l.labels)
 }
 
 func (l *Labels) Less(i, j int) bool {
-	return l.names[i] < l.names[j]
+	return l.labels[i].Name < l.labels[j].Name
 }
 
 func (l *Labels) Swap(i, j int) {
-	tmp := l.names[j]
-	l.names[j] = l.names[i]
-	l.names[i] = tmp
+	tmp := l.labels[j]
+	l.labels[j] = l.labels[i]
+	l.labels[i] = tmp
 
-	tmp = l.values[j]
-	l.values[j] = l.values[i]
-	l.values[i] = tmp
+	tmp = l.labels[j]
+	l.labels[j] = l.labels[i]
+	l.labels[i] = tmp
 }

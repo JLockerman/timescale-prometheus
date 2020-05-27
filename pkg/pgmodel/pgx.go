@@ -15,6 +15,7 @@ import (
 	"github.com/allegro/bigcache"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/prometheus/common/model"
@@ -36,7 +37,7 @@ const (
 	getCreateMetricsTableSQL        = "SELECT table_name FROM " + catalogSchema + ".get_or_create_metric_table_name($1)"
 	getCreateMetricsTableWithNewSQL = "SELECT table_name, possibly_new FROM " + catalogSchema + ".get_or_create_metric_table_name($1)"
 	finalizeMetricCreation          = "CALL " + catalogSchema + ".finalize_metric_creation()"
-	getSeriesIDForLabelSQL          = "SELECT * FROM " + catalogSchema + ".get_series_id_for_key_value_array($1, $2, $3)"
+	getSeriesIDForLabelSQL          = "SELECT table_name, series_id FROM " + catalogSchema + ".get_series_id_for_key_value_array($1, $2::TEXT[][])"
 )
 
 var (
@@ -620,9 +621,8 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 			batchSeries[len(batchSeries)-1] = append(batchSeries[len(batchSeries)-1], curr)
 			continue
 		}
-
 		batch.Queue("BEGIN;")
-		batch.Queue(getSeriesIDForLabelSQL, curr.labels.metricName, curr.labels.names, curr.labels.values)
+		batch.Queue(getSeriesIDForLabelSQL, curr.labels.metricName, curr.labels)
 		batch.Queue("COMMIT;")
 		numSQLFunctionCalls++
 		batchSeries = append(batchSeries, []*samplesInfo{curr})
@@ -664,6 +664,28 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 	}
 
 	return tableName, nil
+}
+
+func (l *Labels) EncodeBinary(ci *pgtype.ConnInfo, buf []byte) ([]byte, error) {
+	if len(l.labels) == 0 {
+		panic("tried tp encode empty labels")
+	}
+	arr := pgtype.TextArray{
+		Elements:   make([]pgtype.Text, len(l.labels)*2),
+		Dimensions: []pgtype.ArrayDimension{{Length: int32(len(l.labels)), LowerBound: 1}, {Length: 2, LowerBound: 1}},
+		Status:     pgtype.Present,
+	}
+
+	j := 0
+	for i := 0; i < len(l.labels); i++ {
+		arr.Elements[j] = pgtype.Text{String: l.labels[i].Name, Status: pgtype.Present}
+		arr.Elements[j+1] = pgtype.Text{String: l.labels[i].Value, Status: pgtype.Present}
+		j += 2
+	}
+	if j < len(arr.Elements) {
+		panic("unfilled")
+	}
+	return arr.EncodeBinary(ci, buf)
 }
 
 func (p *pendingBuffer) addReq(req insertDataRequest) bool {

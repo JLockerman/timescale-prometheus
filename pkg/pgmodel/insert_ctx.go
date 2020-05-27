@@ -39,12 +39,10 @@ func FinishWriteRequest(wr *prompb.WriteRequest) {
 
 func NewLabels(length int) *Labels {
 	l := lPool.Get().(*Labels)
-	if cap(l.names) >= length {
-		l.names = l.names[:length]
-		l.values = l.values[:length]
+	if cap(l.labels) >= length {
+		l.labels = l.labels[:length]
 	} else {
-		l.names = make([]string, length)
-		l.values = make([]string, length)
+		l.labels = make([]prompb.Label, length)
 	}
 	return l
 }

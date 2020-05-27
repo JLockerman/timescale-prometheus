@@ -847,6 +847,43 @@ END
 $func$
 LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_series_id_for_key_value_array(TEXT, text[], text[]) TO prom_writer;
+
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.key_value_array_flatten(keyvals text[][], OUT label_keys text[], OUT label_values text[])
+AS $func$
+DECLARE
+    kv text[];
+BEGIN
+    label_keys := ARRAY[]::text[];
+    label_values := ARRAY[]::text[];
+
+    FOREACH kv SLICE 1 IN ARRAY keyvals LOOP
+        label_keys := array_append(label_keys, kv[1]);
+        label_values := array_append(label_values, kv[2]);
+    END LOOP;
+
+    RETURN;
+END;
+$func$
+LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.get_series_id_for_key_value_array(metric_name TEXT, keyvals text[][], OUT table_name NAME, OUT series_id BIGINT)
+AS $func$
+DECLARE
+    label_keys text[];
+    label_values text[];
+BEGIN
+    SELECT * INTO STRICT label_keys, label_values
+    FROM SCHEMA_CATALOG.key_value_array_flatten(keyvals);
+
+    SELECT * INTO STRICT table_name, series_id
+    FROM SCHEMA_CATALOG.get_series_id_for_key_value_array(metric_name, label_keys, label_values);
+
+    RETURN;
+END;
+$func$
+LANGUAGE plpgsql VOLATILE;
+GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_series_id_for_key_value_array(TEXT, text[][]) TO prom_writer;
+
 --
 -- Parameter manipulation functions
 --

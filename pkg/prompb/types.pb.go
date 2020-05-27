@@ -196,11 +196,11 @@ func (m *TimeSeries) GetSamples() []Sample {
 }
 
 type Label struct {
-	Name                 string   `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Value                string   `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	XXX_NoUnkeyedLiteral struct{} `json:"-"`
-	XXX_unrecognized     []byte   `json:"-"`
-	XXX_sizecache        int32    `json:"-"`
+	Name  string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	// XXX_unrecognized     []byte   `json:"-"`
+	// XXX_sizecache        int32    `json:"-"`
 }
 
 func (m *Label) Reset()         { *m = Label{} }
@@ -753,10 +753,10 @@ func (m *Label) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
-	if m.XXX_unrecognized != nil {
-		i -= len(m.XXX_unrecognized)
-		copy(dAtA[i:], m.XXX_unrecognized)
-	}
+	// if m.XXX_unrecognized != nil {
+	// 	i -= len(m.XXX_unrecognized)
+	// 	copy(dAtA[i:], m.XXX_unrecognized)
+	// }
 	if len(m.Value) > 0 {
 		i -= len(m.Value)
 		copy(dAtA[i:], m.Value)
@@ -1105,9 +1105,9 @@ func (m *Label) Size() (n int) {
 	if l > 0 {
 		n += 1 + l + sovTypes(uint64(l))
 	}
-	if m.XXX_unrecognized != nil {
-		n += len(m.XXX_unrecognized)
-	}
+	// if m.XXX_unrecognized != nil {
+	// 	n += len(m.XXX_unrecognized)
+	// }
 	return n
 }
 
@@ -1624,7 +1624,7 @@ func (m *Label) Unmarshal(dAtA []byte) error {
 			if (iNdEx + skippy) > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			// m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
 			iNdEx += skippy
 		}
 	}

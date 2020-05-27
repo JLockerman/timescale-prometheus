@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgio"
+	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	_ "github.com/jackc/pgx/v4/stdlib"
@@ -332,6 +335,65 @@ func TestExtensionFunctions(t *testing.T) {
 			if schema != extSchema {
 				t.Errorf("function %s in wrong schema\nexpected\n\t%s\nfound\n\t%s", opr, extSchema, schema)
 			}
+		}
+	})
+}
+
+type labelTransport struct {
+	k string
+	v string
+}
+
+func (src labelTransport) EncodeBinary(ci *pgtype.ConnInfo, buf []byte) ([]byte, error) {
+	//field count
+	buf = pgio.AppendUint32(buf, 2)
+
+	// key
+	//     OID
+	buf = pgio.AppendUint32(buf, pgtype.TextOID)
+	//    len
+	buf = pgio.AppendUint32(buf, uint32(len(src.k)))
+	//    val
+	buf = append(buf, src.k...)
+
+	// val
+	//     OID
+	buf = pgio.AppendUint32(buf, pgtype.TextOID)
+	//    len
+	buf = pgio.AppendUint32(buf, uint32(len(src.v)))
+	//    val
+	buf = append(buf, src.v...)
+
+	return buf, nil
+}
+
+func TestCustomStruct(t *testing.T) {
+	if !*useExtension || testing.Short() {
+		t.Skip("skipping extension test; testing without extension")
+	}
+	withDB(t, *testDatabase, func(db *pgxpool.Pool, t testing.TB) {
+
+		_, err := db.Exec(context.Background(), "CREATE TYPE label_transport AS (k TEXT, v TEXT);")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = db.Exec(context.Background(), "CREATE FUNCTION label_parse(label_transport) RETURNS _prom_catalog.label AS 'SELECT 0, ($1).k, ($1).v;' LANGUAGE SQL;")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		value := labelTransport{
+			k: "key str",
+			v: "value!string",
+		}
+		var res string
+		err = db.QueryRow(context.Background(), "SELECT label_parse($1)::TEXT;", pgx.QueryResultFormats{pgx.BinaryFormatCode}, value).Scan(&res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res != `(0,"key str",value!string)` {
+			t.Errorf("result: %s", res)
 		}
 	})
 }
