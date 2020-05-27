@@ -97,6 +97,8 @@ func (i *DBIngestor) parseData(tts []prompb.TimeSeries, ctx *InsertCtx) (map[str
 		dataSamples[metricName] = append(dataSamples[metricName], sample)
 	}
 
+	ctx.ClearTimeSeries()
+
 	return dataSamples, rows, nil
 }
 

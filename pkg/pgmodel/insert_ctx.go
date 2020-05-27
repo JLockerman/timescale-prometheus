@@ -22,6 +22,14 @@ func NewInsertCtx() *InsertCtx {
 }
 
 func (t *InsertCtx) clear() {
+	t.ClearTimeSeries()
+	for i := range t.Labels {
+		t.Labels[i].reset()
+	}
+	t.Labels = t.Labels[:0]
+}
+
+func (t *InsertCtx) ClearTimeSeries() {
 	for i := range t.WriteRequest.Timeseries {
 		ts := &t.WriteRequest.Timeseries[i]
 		for j := range ts.Labels {
@@ -33,12 +41,9 @@ func (t *InsertCtx) clear() {
 		}
 		ts.Labels = ts.Labels[:0]
 		ts.Samples = ts.Samples[:0]
+		ts.XXX_unrecognized = nil
 	}
 	t.WriteRequest.Timeseries = t.WriteRequest.Timeseries[:0]
-	for i := range t.Labels {
-		t.Labels[i].reset()
-	}
-	t.Labels = t.Labels[:0]
 }
 
 func (t *InsertCtx) NewLabels(length int) *Labels {
