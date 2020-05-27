@@ -541,7 +541,7 @@ func TestPGXInserterInsertData(t *testing.T) {
 				getMetricErr: c.metricsGetErr,
 				setMetricErr: c.metricsSetErr,
 			}
-			inserter, err := newPgxInserter(mock, mockMetrics)
+			inserter, err := newPgxInserter(mock, mockMetrics, false)
 			if err != nil {
 				t.Fatal(err)
 			}

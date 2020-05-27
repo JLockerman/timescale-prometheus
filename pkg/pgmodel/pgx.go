@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/allegro/bigcache"
@@ -159,13 +160,13 @@ func (t *SampleInfoIterator) Err() error {
 
 // NewPgxIngestorWithMetricCache returns a new Ingestor that uses connection pool and a metrics cache
 // for caching metric table names.
-func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache) (*DBIngestor, error) {
+func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache, asyncAcks bool) (*DBIngestor, error) {
 
 	conn := &pgxConnImpl{
 		conn: c,
 	}
 
-	pi, err := newPgxInserter(conn, cache)
+	pi, err := newPgxInserter(conn, cache, asyncAcks)
 	if err != nil {
 		return nil, err
 	}
@@ -186,16 +187,28 @@ func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache) (*DBInges
 func NewPgxIngestor(c *pgxpool.Pool) (*DBIngestor, error) {
 	metrics, _ := bigcache.NewBigCache(DefaultCacheConfig())
 	cache := &MetricNameCache{metrics}
-	return NewPgxIngestorWithMetricCache(c, cache)
+	return NewPgxIngestorWithMetricCache(c, cache, false)
 }
 
-func newPgxInserter(conn pgxConn, cache MetricCache) (*pgxInserter, error) {
+func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInserter, error) {
 	cmc := make(chan struct{}, 1)
 
 	inserter := &pgxInserter{
 		conn:                   conn,
 		metricTableNames:       cache,
 		completeMetricCreation: cmc,
+		asyncAcks:              asyncAcks,
+	}
+	if asyncAcks {
+		inserter.insertedDatapoints = new(uint64)
+		go func() {
+			log.Info("msg", "outputting throughpput info once every 10s")
+			tick := time.Tick(10 * time.Second)
+			for range tick {
+				inserted := atomic.SwapUint64(inserter.insertedDatapoints, 0)
+				log.Info("msg", "Samples write throughput", "samples/sec", inserted/10)
+			}
+		}()
 	}
 	//on startup run a completeMetricCreation to recover any potentially
 	//incomplete metric
@@ -214,6 +227,8 @@ type pgxInserter struct {
 	metricTableNames       MetricCache
 	inserters              sync.Map
 	completeMetricCreation chan struct{}
+	asyncAcks              bool
+	insertedDatapoints     *uint64
 }
 
 func (p *pgxInserter) CompleteMetricCreation() error {
@@ -260,7 +275,6 @@ type insertDataTask struct {
 func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) (uint64, error) {
 	var numRows uint64
 	workFinished := &sync.WaitGroup{}
-	sync := true
 	workFinished.Add(len(rows))
 	errChan := make(chan error, 1)
 	for metricName, data := range rows {
@@ -271,7 +285,7 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	}
 
 	var err error
-	if sync {
+	if !p.asyncAcks {
 		workFinished.Wait()
 		ctx.Close()
 		select {
@@ -283,7 +297,16 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 		go func() {
 			workFinished.Wait()
 			ctx.Close()
+			select {
+			case err = <-errChan:
+			default:
+			}
 			close(errChan)
+			if err != nil {
+				log.Error("msg", "error on send", "error", err)
+			} else {
+				atomic.AddUint64(p.insertedDatapoints, numRows)
+			}
 		}()
 	}
 
