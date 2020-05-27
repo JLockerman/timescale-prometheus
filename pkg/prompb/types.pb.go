@@ -9,6 +9,8 @@ import (
 	io "io"
 	math "math"
 	math_bits "math/bits"
+	"reflect"
+	"unsafe"
 
 	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
@@ -146,7 +148,7 @@ type TimeSeries struct {
 	XXX_sizecache        int32    `json:"-"`
 }
 
-func (m *TimeSeries) Reset()         { *m = TimeSeries{Labels : m.Labels[:0], Samples: m.Samples[:0]} }
+func (m *TimeSeries) Reset()         { *m = TimeSeries{Labels: m.Labels[:0], Samples: m.Samples[:0]} }
 func (m *TimeSeries) String() string { return proto.CompactTextString(m) }
 func (*TimeSeries) ProtoMessage()    {}
 func (*TimeSeries) Descriptor() ([]byte, []int) {
@@ -1517,7 +1519,7 @@ func (m *Label) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Name = string(dAtA[iNdEx:postIndex])
+			m.Name = UnsafeBytestoString(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
@@ -1549,7 +1551,7 @@ func (m *Label) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Value = string(dAtA[iNdEx:postIndex])
+			m.Value = UnsafeBytestoString(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -1747,7 +1749,7 @@ func (m *LabelMatcher) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Name = string(dAtA[iNdEx:postIndex])
+			m.Name = UnsafeBytestoString(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
@@ -1779,7 +1781,7 @@ func (m *LabelMatcher) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Value = string(dAtA[iNdEx:postIndex])
+			m.Value = UnsafeBytestoString(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -1805,6 +1807,13 @@ func (m *LabelMatcher) Unmarshal(dAtA []byte) error {
 		return io.ErrUnexpectedEOF
 	}
 	return nil
+}
+func UnsafeBytestoString(bytes []byte) (s string) {
+	sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&bytes))
+	stringHeader := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	stringHeader.Data = sliceHeader.Data
+	stringHeader.Len = sliceHeader.Len
+	return
 }
 func (m *ReadHints) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
