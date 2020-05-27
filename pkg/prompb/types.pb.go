@@ -9,6 +9,8 @@ import (
 	io "io"
 	math "math"
 	math_bits "math/bits"
+	"reflect"
+	"unsafe"
 
 	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
@@ -1900,11 +1902,12 @@ func (m *LabelMatcher) Unmarshal(dAtA []byte) error {
 	return nil
 }
 func UnsafeBytestoString(bytes []byte) (s string) {
-	// sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&bytes))
-	// stringHeader := (*reflect.StringHeader)(unsafe.Pointer(&s))
-	// stringHeader.Data = sliceHeader.Data
-	// stringHeader.Len = sliceHeader.Len
-	return string(bytes)
+	sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&bytes))
+	stringHeader := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	stringHeader.Data = sliceHeader.Data
+	stringHeader.Len = sliceHeader.Len
+	return
+	// return string(bytes)
 }
 func (m *ReadHints) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
