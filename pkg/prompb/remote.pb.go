@@ -881,38 +881,12 @@ func sozRemote(x uint64) (n int) {
 }
 func (m *WriteRequest) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowRemote
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: WriteRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: WriteRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Timeseries", wireType)
-			}
-			var msglen int
+	numTimeseries := 0
+	{
+		iNdEx := 0
+		for iNdEx < l {
+			preIndex := iNdEx
+			var wire uint64
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowRemote
@@ -922,46 +896,109 @@ func (m *WriteRequest) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
+				wire |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			fieldNum := int32(wire >> 3)
+			wireType := int(wire & 0x7)
+			if wireType == 4 {
+				return fmt.Errorf("proto: WriteRequest: wiretype end group for non-group")
+			}
+			if fieldNum <= 0 {
+				return fmt.Errorf("proto: WriteRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			}
+			switch fieldNum {
+			case 1:
+				if wireType != 2 {
+					return fmt.Errorf("proto: wrong wireType = %d for field Timeseries", wireType)
+				}
+				var msglen int
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowRemote
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					msglen |= int(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				if msglen < 0 {
+					return ErrInvalidLengthRemote
+				}
+				postIndex := iNdEx + msglen
+				if postIndex < 0 {
+					return ErrInvalidLengthRemote
+				}
+				if postIndex > l {
+					return io.ErrUnexpectedEOF
+				}
+				numTimeseries += 1
+				iNdEx = postIndex
+			default:
+				iNdEx = preIndex
+				skippy, err := skipRemote(dAtA[iNdEx:])
+				if err != nil {
+					return err
+				}
+				if skippy < 0 {
+					return ErrInvalidLengthRemote
+				}
+				if (iNdEx + skippy) < 0 {
+					return ErrInvalidLengthRemote
+				}
+				if (iNdEx + skippy) > l {
+					return io.ErrUnexpectedEOF
+				}
+				iNdEx += skippy
+			}
+		}
+	}
+	if cap(m.Timeseries) < numTimeseries {
+		newTimeseries := make([]TimeSeries, len(m.Timeseries), numTimeseries)
+		copy(newTimeseries, m.Timeseries)
+		m.Timeseries = newTimeseries
+	}
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		switch fieldNum {
+		case 1:
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				b := dAtA[iNdEx]
+				iNdEx++
 				msglen |= int(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
-				return ErrInvalidLengthRemote
-			}
 			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthRemote
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if len(m.Timeseries) < cap(m.Timeseries) {
-				m.Timeseries = m.Timeseries[:len(m.Timeseries)+1]
-				m.Timeseries[len(m.Timeseries)-1].Reset()
-			} else {
-				m.Timeseries = append(m.Timeseries, TimeSeries{})
-			}
+			m.Timeseries = m.Timeseries[:len(m.Timeseries)+1]
+			m.Timeseries[len(m.Timeseries)-1].Reset()
 			if err := m.Timeseries[len(m.Timeseries)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
-			skippy, err := skipRemote(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if skippy < 0 {
-				return ErrInvalidLengthRemote
-			}
-			if (iNdEx + skippy) < 0 {
-				return ErrInvalidLengthRemote
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
+			skippy, _ := skipRemote(dAtA[iNdEx:])
 			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
 			iNdEx += skippy
 		}
