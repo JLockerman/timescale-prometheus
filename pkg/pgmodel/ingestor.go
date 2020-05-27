@@ -41,7 +41,7 @@ type Cache interface {
 }
 
 type samplesInfo struct {
-	labels   Labels
+	labels   *Labels
 	seriesID SeriesID
 	samples  []prompb.Sample
 }

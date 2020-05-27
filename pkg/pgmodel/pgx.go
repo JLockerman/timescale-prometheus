@@ -522,12 +522,30 @@ func (h *insertHandler) nonblockingHandleReq() bool {
 }
 
 func (h *insertHandler) handleReq(req insertDataRequest) bool {
+	h.fillKnowSeriesIds(req.data)
 	needsFlush := h.pending.addReq(req)
 	if needsFlush {
 		h.flushPending(h.pending)
 		return true
 	}
 	return false
+}
+
+func (h *insertHandler) fillKnowSeriesIds(sampleInfos []samplesInfo) (numMissingSeries int) {
+	for i, series := range sampleInfos {
+		if series.seriesID > 0 {
+			continue
+		}
+		id, ok := h.seriesCache[series.labels.String()]
+		if ok {
+			sampleInfos[i].seriesID = id
+			FinishLabels(series.labels)
+			series.labels = nil
+		} else {
+			numMissingSeries++
+		}
+	}
+	return
 }
 
 func (h *insertHandler) flush() {
@@ -573,16 +591,7 @@ func (h *insertHandler) flushPending(pending *pendingBuffer) {
 }
 
 func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) {
-	numMissingSeries := 0
-	//TODO free old labels after this function
-	for i, series := range sampleInfos {
-		id, ok := h.seriesCache[series.labels.String()]
-		if ok {
-			sampleInfos[i].seriesID = id
-		} else {
-			numMissingSeries++
-		}
-	}
+	numMissingSeries := h.fillKnowSeriesIds(sampleInfos)
 
 	if numMissingSeries == 0 {
 		return "", nil
@@ -594,7 +603,7 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 			seriesToInsert = append(seriesToInsert, &sampleInfos[i])
 		}
 	}
-	var lastSeenLabel Labels
+	var lastSeenLabel *Labels
 
 	batch := h.conn.NewBatch()
 	numSQLFunctionCalls := 0
@@ -607,7 +616,7 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 	batchSeries := make([][]*samplesInfo, 0, len(seriesToInsert))
 	// group the seriesToInsert by labels, one slice array per unique labels
 	for _, curr := range seriesToInsert {
-		if !lastSeenLabel.isEmpty() && lastSeenLabel.Equal(curr.labels) {
+		if lastSeenLabel != nil && lastSeenLabel.Equal(curr.labels) {
 			batchSeries[len(batchSeries)-1] = append(batchSeries[len(batchSeries)-1], curr)
 			continue
 		}

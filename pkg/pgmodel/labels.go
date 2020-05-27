@@ -105,14 +105,9 @@ func initLabels(l *Labels) error {
 	return nil
 }
 
-func labelProtosToLabels(labelPairs []prompb.Label) (Labels, string, error) {
+func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
 	length := len(labelPairs)
-	// TODO return pointer
-	// labels := NewLabels(length)
-	labels := Labels{
-		names:  make([]string, length),
-		values: make([]string, length),
-	}
+	labels := NewLabels(length)
 
 	labels.metricName = ""
 
@@ -124,12 +119,12 @@ func labelProtosToLabels(labelPairs []prompb.Label) (Labels, string, error) {
 		}
 	}
 
-	err := initLabels(&labels)
+	err := initLabels(labels)
 
 	return labels, labels.metricName, err
 }
 
-func (l Labels) isEmpty() bool {
+func (l *Labels) isEmpty() bool {
 	return l.names == nil
 }
 
@@ -151,12 +146,12 @@ func (l *Labels) reset() {
 }
 
 // Compare returns a comparison int between two Labels
-func (l Labels) Compare(b Labels) int {
+func (l *Labels) Compare(b *Labels) int {
 	return strings.Compare(l.str, b.str)
 }
 
 // Equal returns true if two Labels are equal
-func (l Labels) Equal(b Labels) bool {
+func (l *Labels) Equal(b *Labels) bool {
 	return l.str == b.str
 }
 
