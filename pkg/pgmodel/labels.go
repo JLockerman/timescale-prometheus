@@ -32,14 +32,14 @@ func EmptyLables() Labels {
 func LabelsFromSlice(ls labels.Labels) (Labels, error) {
 	length := len(ls)
 	labels := Labels{
-		names:  make([]string, 0, length),
-		values: make([]string, 0, length),
+		names:  make([]string, length),
+		values: make([]string, length),
 	}
 
 	labels.metricName = ""
-	for _, l := range ls {
-		labels.names = append(labels.names, l.Name)
-		labels.values = append(labels.values, l.Value)
+	for i, l := range ls {
+		labels.names[i] = l.Name
+		labels.values[i] = l.Value
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
@@ -105,14 +105,15 @@ func initLabels(l *Labels) error {
 	return nil
 }
 
-func labelProtosToLabels(labelPairs []prompb.Label, ctx *InsertCtx) (Labels, string, error) {
+func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
 	length := len(labelPairs)
-	labels := ctx.NewLabels(length)
+	labels := NewLabels(length)
 
 	labels.metricName = ""
-	for _, l := range labelPairs {
-		labels.names = append(labels.names, l.Name)
-		labels.values = append(labels.values, l.Value)
+
+	for i, l := range labelPairs {
+		labels.names[i] = l.Name
+		labels.values[i] = l.Value
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
@@ -120,10 +121,10 @@ func labelProtosToLabels(labelPairs []prompb.Label, ctx *InsertCtx) (Labels, str
 
 	err := initLabels(labels)
 
-	return *labels, labels.metricName, err
+	return labels, labels.metricName, err
 }
 
-func (l Labels) isEmpty() bool {
+func (l *Labels) isEmpty() bool {
 	return l.names == nil
 }
 
@@ -131,13 +132,26 @@ func (l *Labels) String() string {
 	return l.str
 }
 
+func (l *Labels) reset() {
+	l.metricName = ""
+	for i := range l.names {
+		l.names[i] = ""
+	}
+	l.names = l.names[:0]
+	for i := range l.values {
+		l.values[i] = ""
+	}
+	l.values = l.values[:0]
+	l.str = ""
+}
+
 // Compare returns a comparison int between two Labels
-func (l Labels) Compare(b Labels) int {
+func (l *Labels) Compare(b *Labels) int {
 	return strings.Compare(l.str, b.str)
 }
 
 // Equal returns true if two Labels are equal
-func (l Labels) Equal(b Labels) bool {
+func (l *Labels) Equal(b *Labels) bool {
 	return l.str == b.str
 }
 
