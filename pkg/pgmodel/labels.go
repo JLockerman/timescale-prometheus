@@ -131,6 +131,19 @@ func (l *Labels) String() string {
 	return l.str
 }
 
+func (l *Labels) reset() {
+	l.metricName = ""
+	for i := range l.names {
+		l.names[i] = ""
+	}
+	l.names = l.names[:0]
+	for i := range l.values {
+		l.values[i] = ""
+	}
+	l.values = l.values[:0]
+	l.str = ""
+}
+
 // Compare returns a comparison int between two Labels
 func (l Labels) Compare(b Labels) int {
 	return strings.Compare(l.str, b.str)
