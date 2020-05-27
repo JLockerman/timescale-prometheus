@@ -1,73 +1,55 @@
 package pgmodel
 
 import (
+	"sync"
+
 	"github.com/timescale/timescale-prometheus/pkg/prompb"
 )
 
-// var pool = sync.Pool{
-// 	New: func() interface{} {
-// 		return new(InsertCtx)
-// 	},
-// }
-
-type InsertCtx struct {
-	WriteRequest prompb.WriteRequest
-	Labels       []Labels
+var wrPool = sync.Pool{
+	New: func() interface{} {
+		return new(prompb.WriteRequest)
+	},
 }
 
-func NewInsertCtx() *InsertCtx {
-	// return pool.Get().(*InsertCtx)
-	return new(InsertCtx)
+var lPool = sync.Pool{
+	New: func() interface{} {
+		return new(Labels)
+	},
 }
 
-func (t *InsertCtx) clear() {
-	t.ClearTimeSeries()
-	// for i := range t.Labels {
-	// 	t.Labels[i].reset()
-	// }
-	// t.Labels = t.Labels[:0]
-	t.Labels = nil
+func NewWriteRequest() *prompb.WriteRequest {
+	return wrPool.Get().(*prompb.WriteRequest)
 }
 
-func (t *InsertCtx) ClearTimeSeries() {
-	// for i := range t.WriteRequest.Timeseries {
-	// 	ts := &t.WriteRequest.Timeseries[i]
-	// 	for j := range ts.Labels {
-	// 		ts.Labels[j] = prompb.Label{}
-	// 	}
-	// 	// TODO This won't be needed once Sample is a value type
-	// 	for j := range ts.Samples {
-	// 		ts.Samples[j] = prompb.Sample{}
-	// 	}
-	// 	ts.Labels = ts.Labels[:0]
-	// 	ts.Samples = ts.Samples[:0]
-	// 	ts.XXX_unrecognized = nil
-	// }
-	// t.WriteRequest.Timeseries = t.WriteRequest.Timeseries[:0]
-	t.WriteRequest = prompb.WriteRequest{}
-}
-
-func (t *InsertCtx) NewLabels(length int) *Labels {
-	if len(t.Labels) < cap(t.Labels) {
-		t.Labels = t.Labels[:len(t.Labels)+1]
-		lastLabels := &t.Labels[len(t.Labels)-1]
-		if cap(lastLabels.names) >= length {
-			lastLabels.names = lastLabels.names[:length]
-			lastLabels.values = lastLabels.values[:length]
-		} else {
-			lastLabels.names = make([]string, length)
-			lastLabels.values = make([]string, length)
+func FinishWriteRequest(wr *prompb.WriteRequest) {
+	for i := range wr.Timeseries {
+		ts := &wr.Timeseries[i]
+		for j := range ts.Labels {
+			ts.Labels[j] = prompb.Label{}
 		}
-	} else {
-		t.Labels = append(t.Labels, Labels{
-			names:  make([]string, length),
-			values: make([]string, length),
-		})
+		ts.Labels = ts.Labels[:0]
+		ts.Samples = ts.Samples[:0]
+		ts.XXX_unrecognized = nil
 	}
-	return &t.Labels[len(t.Labels)-1]
+	wr.Timeseries = wr.Timeseries[:0]
+	wr.XXX_unrecognized = nil
+	wrPool.Put(wr)
 }
 
-func (t *InsertCtx) Close() {
-	t.clear()
-	// pool.Put(t)
+func NewLabels(length int) *Labels {
+	l := lPool.Get().(*Labels)
+	if cap(l.names) >= length {
+		l.names = l.names[:length]
+		l.values = l.values[:length]
+	} else {
+		l.names = make([]string, length)
+		l.values = make([]string, length)
+	}
+	return l
+}
+
+func FinishLabels(l *Labels) {
+	l.reset()
+	lPool.Put(l)
 }

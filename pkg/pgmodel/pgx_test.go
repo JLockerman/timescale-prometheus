@@ -546,7 +546,7 @@ func TestPGXInserterInsertData(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err = inserter.InsertData(c.rows, NewInsertCtx())
+			_, err = inserter.InsertData(c.rows)
 
 			if err != nil {
 				var expErr error

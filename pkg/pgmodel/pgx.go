@@ -256,8 +256,8 @@ func (p *pgxInserter) Close() {
 	})
 }
 
-func (p *pgxInserter) InsertNewData(rows map[string][]samplesInfo, ctx *InsertCtx) (uint64, error) {
-	return p.InsertData(rows, ctx)
+func (p *pgxInserter) InsertNewData(rows map[string][]samplesInfo) (uint64, error) {
+	return p.InsertData(rows)
 }
 
 type insertDataRequest struct {
@@ -272,7 +272,7 @@ type insertDataTask struct {
 	errChan  chan error
 }
 
-func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) (uint64, error) {
+func (p *pgxInserter) InsertData(rows map[string][]samplesInfo) (uint64, error) {
 	var numRows uint64
 	workFinished := &sync.WaitGroup{}
 	workFinished.Add(len(rows))
@@ -287,7 +287,6 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	var err error
 	if !p.asyncAcks {
 		workFinished.Wait()
-		ctx.Close()
 		select {
 		case err = <-errChan:
 		default:
@@ -296,7 +295,6 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo, ctx *InsertCtx) 
 	} else {
 		go func() {
 			workFinished.Wait()
-			ctx.Close()
 			select {
 			case err = <-errChan:
 			default:
@@ -576,7 +574,7 @@ func (h *insertHandler) flushPending(pending *pendingBuffer) {
 
 func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) {
 	numMissingSeries := 0
-
+	//TODO free old labels after this function
 	for i, series := range sampleInfos {
 		id, ok := h.seriesCache[series.labels.String()]
 		if ok {
