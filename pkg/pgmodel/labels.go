@@ -32,14 +32,14 @@ func EmptyLables() Labels {
 func LabelsFromSlice(ls labels.Labels) (Labels, error) {
 	length := len(ls)
 	labels := Labels{
-		names:  make([]string, 0, length),
-		values: make([]string, 0, length),
+		names:  make([]string, length),
+		values: make([]string, length),
 	}
 
 	labels.metricName = ""
-	for _, l := range ls {
-		labels.names = append(labels.names, l.Name)
-		labels.values = append(labels.values, l.Value)
+	for i, l := range ls {
+		labels.names[i] = l.Name
+		labels.values[i] = l.Value
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
@@ -110,9 +110,10 @@ func labelProtosToLabels(labelPairs []prompb.Label, ctx *InsertCtx) (Labels, str
 	labels := ctx.NewLabels(length)
 
 	labels.metricName = ""
-	for _, l := range labelPairs {
-		labels.names = append(labels.names, l.Name)
-		labels.values = append(labels.values, l.Value)
+
+	for i, l := range labelPairs {
+		labels.names[i] = l.Name
+		labels.values[i] = l.Value
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}

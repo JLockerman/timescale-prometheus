@@ -44,10 +44,18 @@ func (t *InsertCtx) clear() {
 func (t *InsertCtx) NewLabels(length int) *Labels {
 	if len(t.Labels) < cap(t.Labels) {
 		t.Labels = t.Labels[:len(t.Labels)+1]
+		lastLabels := &t.Labels[len(t.Labels)-1]
+		if cap(lastLabels.names) >= length {
+			lastLabels.names = lastLabels.names[:length]
+			lastLabels.values = lastLabels.values[:length]
+		} else {
+			lastLabels.names = make([]string, length)
+			lastLabels.values = make([]string, length)
+		}
 	} else {
 		t.Labels = append(t.Labels, Labels{
-			names:  make([]string, 0, length),
-			values: make([]string, 0, length),
+			names:  make([]string, length),
+			values: make([]string, length),
 		})
 	}
 	return &t.Labels[len(t.Labels)-1]
