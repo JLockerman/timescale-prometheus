@@ -88,8 +88,8 @@ type Sample struct {
 	Value                float64  `protobuf:"fixed64,1,opt,name=value,proto3" json:"value,omitempty"`
 	Timestamp            int64    `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
-	XXX_unrecognized     []byte   `json:"-"`
-	XXX_sizecache        int32    `json:"-"`
+	// XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache int32 `json:"-"`
 }
 
 func (m *Sample) Reset()         { *m = Sample{} }
@@ -660,10 +660,10 @@ func (m *Sample) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
-	if m.XXX_unrecognized != nil {
-		i -= len(m.XXX_unrecognized)
-		copy(dAtA[i:], m.XXX_unrecognized)
-	}
+	// if m.XXX_unrecognized != nil {
+	// 	i -= len(m.XXX_unrecognized)
+	// 	copy(dAtA[i:], m.XXX_unrecognized)
+	// }
 	if m.Timestamp != 0 {
 		i = encodeVarintTypes(dAtA, i, uint64(m.Timestamp))
 		i--
@@ -1061,9 +1061,9 @@ func (m *Sample) Size() (n int) {
 	if m.Timestamp != 0 {
 		n += 1 + sovTypes(uint64(m.Timestamp))
 	}
-	if m.XXX_unrecognized != nil {
-		n += len(m.XXX_unrecognized)
-	}
+	// if m.XXX_unrecognized != nil {
+	// 	n += len(m.XXX_unrecognized)
+	// }
 	return n
 }
 
@@ -1318,7 +1318,7 @@ func (m *Sample) Unmarshal(dAtA []byte) error {
 			if (iNdEx + skippy) > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
+			// m.XXX_unrecognized = append(m.XXX_unrecognized, dAtA[iNdEx:iNdEx+skippy]...)
 			iNdEx += skippy
 		}
 	}
