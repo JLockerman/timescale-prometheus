@@ -540,7 +540,7 @@ func (h *insertHandler) fillKnowSeriesIds(sampleInfos []samplesInfo) (numMissing
 		id, ok := h.seriesCache[series.labels.String()]
 		if ok {
 			sampleInfos[i].seriesID = id
-			FinishLabels(series.labels)
+			// FinishLabels(series.labels)
 			series.labels = nil
 		} else {
 			numMissingSeries++

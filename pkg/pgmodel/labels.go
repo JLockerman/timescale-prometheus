@@ -39,21 +39,25 @@ func LabelsFromSlice(ls labels.Labels) (Labels, error) {
 		}
 	}
 
-	err := initLabels(&labels)
-	return labels, err
+	// err := initLabels(&labels)
+	return labels, nil
 }
 
 // initLabels intializes labels
-func initLabels(l *Labels) error {
+func getStr(labels []prompb.Label) (string, error) {
 
-	if !sort.IsSorted(l) {
-		sort.Sort(l)
+	if !sort.SliceIsSorted(labels, func(i, j int) bool {
+		return labels[i].Name < labels[j].Name
+	}) {
+		sort.Slice(labels, func(i, j int) bool {
+			return labels[i].Name < labels[j].Name
+		})
 	}
 
-	length := len(l.labels)
+	length := len(labels)
 	expectedStrLen := length * 4 // 2 for the length of each key, and 2 for the lengthof each value
 	for i := 0; i < length; i++ {
-		l := l.labels[i]
+		l := labels[i]
 		expectedStrLen += len(l.Name) + len(l.Value)
 	}
 
@@ -62,7 +66,7 @@ func initLabels(l *Labels) error {
 	// total length anyway, we only use 16bits to store the legth of each substring
 	// in our string encoding
 	if expectedStrLen > math.MaxUint16 {
-		return fmt.Errorf("series too long, combined series has length %d, max length %d", expectedStrLen, ^uint16(0))
+		return "", fmt.Errorf("series too long, combined series has length %d, max length %d", expectedStrLen, ^uint16(0))
 	}
 
 	// the string representation is
@@ -74,7 +78,7 @@ func initLabels(l *Labels) error {
 
 	lengthBuf := make([]byte, 2)
 	for i := 0; i < length; i++ {
-		l := l.labels[i]
+		l := labels[i]
 		key := l.Name
 
 		// this cast is safe since we check that the combined length of all the
@@ -94,25 +98,36 @@ func initLabels(l *Labels) error {
 		builder.WriteString(val)
 	}
 
-	l.str = builder.String()
-
-	return nil
+	return builder.String(), nil
 }
 
 func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
+	str, err := getStr(labelPairs)
+	if err != nil {
+		return nil, "", err
+	}
 	length := len(labelPairs)
-	labels := NewLabels(length)
-	copy(labels.labels, labelPairs)
+	labels := GetLabels(str)
+	storeLabels := false
+	if labels == nil {
+		storeLabels = true
+		labels = new(Labels)
+		labels.labels = make([]prompb.Label, length)
+		labels.str = str
+		copy(labels.labels, labelPairs)
+	}
 
 	labels.metricName = ""
 
-	for _, l := range labelPairs {
+	for _, l := range labels.labels {
 		if l.Name == MetricNameLabelName {
 			labels.metricName = l.Value
 		}
 	}
 
-	err := initLabels(labels)
+	if storeLabels {
+		SetLabels(str, labels)
+	}
 
 	return labels, labels.metricName, err
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/allegro/bigcache"
@@ -77,4 +78,20 @@ func DefaultCacheConfig() bigcache.Config {
 	config.Logger = &log.CustomCacheLogger{}
 
 	return config
+}
+
+var LabelsInterner = sync.Map{}
+
+func GetLabels(str string) (l *Labels) {
+	val, ok := LabelsInterner.Load(str)
+	if !ok {
+		return
+	}
+	l = val.(*Labels)
+	return
+}
+
+func SetLabels(str string, lset *Labels) *Labels {
+	val, _ := LabelsInterner.LoadOrStore(str, lset)
+	return val.(*Labels)
 }
