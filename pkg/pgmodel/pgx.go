@@ -544,15 +544,16 @@ func (h *insertHandler) hasPendingReqs() bool {
 
 func (h *insertHandler) blockingHandleReq() bool {
 	if h.hasPendingReqs() {
-		if !h.timer.Stop() {
-			<-h.timer.C
-		}
+		// if !h.timer.Stop() {
+		// 	<-h.timer.C
+		// }
 		deadline := h.bufferStart.Add(flushTimeout)
 		timeout := deadline.Sub(time.Now())
 		if timeout < 0 {
 			timeout = time.Microsecond
 		}
-		h.timer.Reset(timeout)
+		// h.timer.Reset(timeout)
+		h.timer = time.NewTimer(timeout)
 		select {
 		case req, ok := <-h.input:
 			if !ok {
