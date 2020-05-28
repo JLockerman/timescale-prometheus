@@ -7,6 +7,7 @@ package pgmodel
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -198,11 +199,27 @@ func NewPgxIngestor(c *pgxpool.Pool) (*DBIngestor, error) {
 func newPgxInserter(conn pgxConn, cache MetricCache, cfg *Cfg) (*pgxInserter, error) {
 	cmc := make(chan struct{}, 1)
 
+	maxProcs := runtime.GOMAXPROCS(-1)
+	if maxProcs <= 0 {
+		maxProcs = runtime.NumCPU()
+	}
+	if maxProcs <= 0 {
+		maxProcs = 1
+	}
+
+	// we leavel one connection per-core for other usages
+	numCopiers := maxProcs * 4
+	toCopiers := make(chan copyRequest, numCopiers)
+	for i := 0; i < numCopiers; i++ {
+		go runCopyFrom(conn, toCopiers)
+	}
+
 	inserter := &pgxInserter{
 		conn:                   conn,
 		metricTableNames:       cache,
 		completeMetricCreation: cmc,
 		asyncAcks:              cfg.AsyncAcks,
+		toCopiers:              toCopiers,
 	}
 	if cfg.AsyncAcks && cfg.ReportInterval > 0 {
 		inserter.insertedDatapoints = new(int64)
@@ -235,6 +252,7 @@ type pgxInserter struct {
 	completeMetricCreation chan struct{}
 	asyncAcks              bool
 	insertedDatapoints     *int64
+	toCopiers              chan copyRequest
 }
 
 func (p *pgxInserter) CompleteMetricCreation() error {
@@ -378,29 +396,11 @@ func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan 
 		actual, old := p.inserters.LoadOrStore(metric, c)
 		inserter = actual
 		if !old {
-			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames)
+			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames, p.toCopiers)
 		}
 	}
 	return inserter.(chan insertDataRequest)
 }
-
-type insertHandler struct {
-	conn            pgxConn
-	input           chan insertDataRequest
-	pending         *pendingBuffer
-	seriesCache     map[string]SeriesID
-	metricTableName string
-}
-
-type pendingBuffer struct {
-	needsResponse []insertDataTask
-	batch         SampleInfoIterator
-}
-
-const (
-	flushSize    = 2000
-	flushTimeout = 500 * time.Millisecond
-)
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
 	res, err := conn.Query(
@@ -427,6 +427,39 @@ func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
 	return tableName, possiblyNew, nil
 }
 
+type insertHandler struct {
+	conn            pgxConn
+	input           chan insertDataRequest
+	pending         *pendingBuffer
+	seriesCache     map[string]SeriesID
+	metricTableName string
+	toCopiers       chan copyRequest
+}
+
+type pendingBuffer struct {
+	needsResponse []insertDataTask
+	batch         SampleInfoIterator
+}
+
+const (
+	flushSize    = 2000
+	flushTimeout = 500 * time.Millisecond
+)
+
+var pendingBuffers = sync.Pool{
+	New: func() interface{} {
+		pb := new(pendingBuffer)
+		pb.needsResponse = make([]insertDataTask, 0)
+		pb.batch = NewSampleInfoIterator()
+		return pb
+	},
+}
+
+type copyRequest struct {
+	data  *pendingBuffer
+	table string
+}
+
 func runInserterRoutineFailure(input chan insertDataRequest, err error) {
 	for idr := range input {
 		select {
@@ -437,7 +470,7 @@ func runInserterRoutineFailure(input chan insertDataRequest, err error) {
 	}
 }
 
-func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName string, completeMetricCreationSignal chan struct{}, errChan chan error, metricTableNames MetricCache) {
+func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName string, completeMetricCreationSignal chan struct{}, errChan chan error, metricTableNames MetricCache, toCopiers chan copyRequest) {
 	tableName, err := metricTableNames.Get(metricName)
 	if err == ErrEntryNotFound {
 		var possiblyNew bool
@@ -477,9 +510,10 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 	handler := insertHandler{
 		conn:            conn,
 		input:           input,
-		pending:         &pendingBuffer{make([]insertDataTask, 0), NewSampleInfoIterator()},
+		pending:         pendingBuffers.Get().(*pendingBuffer),
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
+		toCopiers:       toCopiers,
 	}
 
 	for {
@@ -531,7 +565,7 @@ func (h *insertHandler) handleReq(req insertDataRequest) bool {
 	h.fillKnowSeriesIds(req.data)
 	needsFlush := h.pending.addReq(req)
 	if needsFlush {
-		h.flushPending(h.pending)
+		h.flushPending()
 		return true
 	}
 	return false
@@ -557,25 +591,38 @@ func (h *insertHandler) flush() {
 	if !h.hasPendingReqs() {
 		return
 	}
-	h.flushPending(h.pending)
+	h.flushPending()
 }
 
-func (h *insertHandler) flushPending(pending *pendingBuffer) {
-	err := func() error {
-		_, err := h.setSeriesIds(pending.batch.sampleInfos)
-		if err != nil {
-			return err
+func (h *insertHandler) flushPending() {
+	_, err := h.setSeriesIds(h.pending.batch.sampleInfos)
+	if err != nil {
+		h.pending.finish(err)
+		return
+	}
+
+	h.toCopiers <- copyRequest{h.pending, h.metricTableName}
+	h.pending = pendingBuffers.Get().(*pendingBuffer)
+}
+
+func runCopyFrom(conn pgxConn, in chan copyRequest) {
+	for {
+		req, ok := <-in
+		if !ok {
+			return
 		}
-
-		_, err = h.conn.CopyFrom(
+		_, err := conn.CopyFrom(
 			context.Background(),
-			pgx.Identifier{dataSchema, h.metricTableName},
+			pgx.Identifier{dataSchema, req.table},
 			copyColumns,
-			&pending.batch,
+			&req.data.batch,
 		)
-		return err
-	}()
+		req.data.finish(err)
+		pendingBuffers.Put(req.data)
+	}
+}
 
+func (pending *pendingBuffer) finish(err error) {
 	for i := 0; i < len(pending.needsResponse); i++ {
 		if err != nil {
 			select {
