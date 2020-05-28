@@ -203,7 +203,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 	if maxProcs <= 0 {
 		maxProcs = 1
 	}
-	numInserters := 5*maxProcs - 1
+	numInserters := 2 * maxProcs
 
 	inserter := &pgxInserter{
 		conn:                   conn,
@@ -219,7 +219,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 		c := make(chan struct {
 			p    *pendingBuffer
 			name string
-		}, 1000)
+		}, 10)
 		inserter.copiers[i] = c
 		go runCopyFrom(conn, c)
 	}
