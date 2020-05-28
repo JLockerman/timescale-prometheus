@@ -7,6 +7,7 @@ package pgmodel
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"sort"
 	"sync"
@@ -202,7 +203,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 	if maxProcs <= 0 {
 		maxProcs = 1
 	}
-	numInserters := maxProcs
+	numInserters := 5*maxProcs - 1
 
 	inserter := &pgxInserter{
 		conn:                   conn,
@@ -218,7 +219,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 		c := make(chan struct {
 			p    *pendingBuffer
 			name string
-		})
+		}, 1000)
 		inserter.copiers[i] = c
 		go runCopyFrom(conn, c)
 	}
@@ -609,8 +610,8 @@ func (h *insertHandler) flushPending() {
 	}
 
 	h.pending = pendingBuffers.Get().(*pendingBuffer)
-	// c := rand.Intn(len(h.copiers))
-	h.copiers[0] <- struct {
+	c := rand.Intn(len(h.copiers))
+	h.copiers[c] <- struct {
 		p    *pendingBuffer
 		name string
 	}{pending, h.metricTableName}
@@ -627,16 +628,14 @@ func runCopyFrom(conn pgxConn, c chan struct {
 		}
 		tableName := v.name
 		pending := v.p
-		go func() {
-			_, err := conn.CopyFrom(
-				context.Background(),
-				pgx.Identifier{dataSchema, tableName},
-				copyColumns,
-				&pending.batch,
-			)
-			pending.finish(err)
-			pendingBuffers.Put(pending)
-		}()
+		_, err := conn.CopyFrom(
+			context.Background(),
+			pgx.Identifier{dataSchema, tableName},
+			copyColumns,
+			&pending.batch,
+		)
+		pending.finish(err)
+		pendingBuffers.Put(pending)
 	}
 }
 
