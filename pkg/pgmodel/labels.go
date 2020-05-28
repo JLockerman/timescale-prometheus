@@ -57,12 +57,12 @@ func getStr(labels []prompb.Label) (string, error) {
 		return "", nil
 	}
 
-	if !sort.SliceIsSorted(labels, func(i, j int) bool {
+	comparator := func(i, j int) bool {
 		return labels[i].Name < labels[j].Name
-	}) {
-		sort.Slice(labels, func(i, j int) bool {
-			return labels[i].Name < labels[j].Name
-		})
+	}
+
+	if !sort.SliceIsSorted(labels, comparator) {
+		sort.Slice(labels, comparator)
 	}
 
 	expectedStrLen := len(labels) * 4 // 2 for the length of each key, and 2 for the length of each value

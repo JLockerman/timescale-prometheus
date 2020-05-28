@@ -23,7 +23,7 @@ func FinishWriteRequest(wr *prompb.WriteRequest) {
 			ts.Labels[j] = prompb.Label{}
 		}
 		ts.Labels = ts.Labels[:0]
-		ts.Samples = nil
+		ts.Samples = ts.Samples[:0]
 		ts.XXX_unrecognized = nil
 	}
 	wr.Timeseries = wr.Timeseries[:0]

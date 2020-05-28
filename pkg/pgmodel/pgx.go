@@ -307,7 +307,7 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo) (uint64, error) 
 			}
 			close(errChan)
 			if err != nil {
-				log.Error("msg", "error on send", "error", err)
+				log.Error("msg", fmt.Sprintf("error on async send, dropping %d datapoints", numRows), "error", err)
 			} else if p.insertedDatapoints != nil {
 				atomic.AddInt64(p.insertedDatapoints, int64(numRows))
 			}

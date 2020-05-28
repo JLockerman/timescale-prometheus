@@ -95,6 +95,9 @@ func (i *DBIngestor) parseData(tts []prompb.TimeSeries, req *prompb.WriteRequest
 		rows += len(t.Samples)
 
 		dataSamples[metricName] = append(dataSamples[metricName], sample)
+		// we're going to free req after this, but we still need the samples,
+		// so nil the field
+		t.Samples = nil
 	}
 
 	FinishWriteRequest(req)
