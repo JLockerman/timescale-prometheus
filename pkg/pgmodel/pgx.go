@@ -219,7 +219,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 		c := make(chan struct {
 			p    *pendingBuffer
 			name string
-		})
+		}, 3)
 		inserter.copiers[i] = c
 		go runCopyFrom(conn, c)
 	}
