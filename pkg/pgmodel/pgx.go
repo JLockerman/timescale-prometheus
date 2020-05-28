@@ -379,6 +379,10 @@ func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan 
 	return inserter.(chan insertDataRequest)
 }
 
+var pendingBuffers = sync.Pool{
+	New: func() interface{} { return &pendingBuffer{make([]insertDataTask, 0), NewSampleInfoIterator()} },
+}
+
 type insertHandler struct {
 	conn            pgxConn
 	input           chan insertDataRequest
@@ -526,7 +530,7 @@ func (h *insertHandler) handleReq(req insertDataRequest) bool {
 	h.fillKnowSeriesIds(req.data)
 	needsFlush := h.pending.addReq(req)
 	if needsFlush {
-		h.flushPending(h.pending)
+		h.flushPending()
 		return true
 	}
 	return false
@@ -553,25 +557,34 @@ func (h *insertHandler) flush() {
 	if !h.hasPendingReqs() {
 		return
 	}
-	h.flushPending(h.pending)
+	h.flushPending()
 }
 
-func (h *insertHandler) flushPending(pending *pendingBuffer) {
-	err := func() error {
-		_, err := h.setSeriesIds(pending.batch.sampleInfos)
-		if err != nil {
-			return err
-		}
+func (h *insertHandler) flushPending() {
+	pending := h.pending
+	_, err := h.setSeriesIds(pending.batch.sampleInfos)
 
-		_, err = h.conn.CopyFrom(
+	if err != nil {
+		pending.finish(err)
+	}
+
+	h.pending = pendingBuffers.Get().(*pendingBuffer)
+
+	tableName := h.metricTableName
+	conn := h.conn
+	go func() {
+		_, err = conn.CopyFrom(
 			context.Background(),
-			pgx.Identifier{dataSchema, h.metricTableName},
+			pgx.Identifier{dataSchema, tableName},
 			copyColumns,
 			&pending.batch,
 		)
-		return err
+		pending.finish(err)
+		pendingBuffers.Put(h.pending)
 	}()
+}
 
+func (pending *pendingBuffer) finish(err error) {
 	for i := 0; i < len(pending.needsResponse); i++ {
 		if err != nil {
 			select {
