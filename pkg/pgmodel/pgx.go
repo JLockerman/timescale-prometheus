@@ -549,7 +549,6 @@ func (h *insertHandler) blockingHandleReq() bool {
 		}
 		deadline := h.bufferStart.Add(flushTimeout)
 		timeout := deadline.Sub(time.Now())
-		fmt.Printf("sllep for %v\n", timeout)
 		h.timer.Reset(timeout)
 		select {
 		case req, ok := <-h.input:
@@ -561,12 +560,10 @@ func (h *insertHandler) blockingHandleReq() bool {
 		case <-h.timer.C:
 		}
 	} else {
-		fmt.Printf("wait for new req\n")
 		req, ok := <-h.input
 		if !ok {
 			return false
 		}
-		h.bufferStart = time.Now()
 		h.handleReq(req)
 	}
 	return true
@@ -582,7 +579,12 @@ func (h *insertHandler) nonblockingHandleReq() bool {
 	}
 }
 
+var zeroTime = time.Time{}
+
 func (h *insertHandler) handleReq(req insertDataRequest) bool {
+	if h.bufferStart == zeroTime {
+		h.bufferStart = time.Now()
+	}
 	h.fillKnowSeriesIds(req.data)
 	needsFlush := h.pending.addReq(req)
 	if needsFlush {
@@ -612,6 +614,7 @@ func (h *insertHandler) flush() {
 	if !h.hasPendingReqs() {
 		return
 	}
+	h.bufferStart = zeroTime
 	h.flushPending()
 }
 
