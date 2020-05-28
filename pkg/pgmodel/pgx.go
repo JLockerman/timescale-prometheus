@@ -203,7 +203,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 	if maxProcs <= 0 {
 		maxProcs = 1
 	}
-	numInserters := 2 * maxProcs
+	numInserters := maxProcs
 
 	inserter := &pgxInserter{
 		conn:                   conn,
