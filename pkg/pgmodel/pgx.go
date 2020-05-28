@@ -549,6 +549,7 @@ func (h *insertHandler) blockingHandleReq() bool {
 		}
 		deadline := h.bufferStart.Add(flushTimeout)
 		timeout := deadline.Sub(time.Now())
+		fmt.Printf("sllep for %v\n", timeout)
 		h.timer.Reset(timeout)
 		select {
 		case req, ok := <-h.input:
