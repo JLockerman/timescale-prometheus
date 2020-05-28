@@ -539,7 +539,7 @@ func (h *insertHandler) handleReq(req insertDataRequest) bool {
 
 func (h *insertHandler) fillKnowSeriesIds(sampleInfos []samplesInfo) (numMissingSeries int) {
 	for i, series := range sampleInfos {
-		if series.seriesID > 0 {
+		if series.seriesID > -1 {
 			continue
 		}
 		id, ok := h.seriesCache[series.labels.String()]

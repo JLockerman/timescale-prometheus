@@ -138,6 +138,8 @@ func init() {
 	writeThroughput.Start()
 }
 
+var reportTput = true
+
 func main() {
 	cfg := parseFlags()
 	err := log.Init(cfg.logLevel)
@@ -174,6 +176,10 @@ func main() {
 			log.Error("msg", fmt.Sprintf("Aborting startup because of migration error: %s", util.MaskPassword(err.Error())))
 			os.Exit(1)
 		}
+	}
+
+	if cfg.pgmodelCfg.AsyncAcks && cfg.pgmodelCfg.ReportInterval > 0 {
+		reportTput = false
 	}
 
 	// client has to be initiated after migrate since migrate
@@ -350,8 +356,10 @@ func write(writer pgmodel.DBInserter) http.Handler {
 		writeThroughput.SetCurrent(getCounterValue(sentSamples))
 
 		select {
-		case _ = <-writeThroughput.Values:
-			// log.Info("msg", "Samples write throughput", "samples/sec", d)
+		case d := <-writeThroughput.Values:
+			if reportTput {
+				log.Info("msg", "Samples write throughput", "samples/sec", d)
+			}
 		default:
 		}
 

@@ -53,6 +53,9 @@ func LabelsFromSlice(ls labels.Labels) (*Labels, error) {
 
 // initLabels intializes labels
 func getStr(labels []prompb.Label) (string, error) {
+	if len(labels) == 0 {
+		return "", nil
+	}
 
 	if !sort.SliceIsSorted(labels, func(i, j int) bool {
 		return labels[i].Name < labels[j].Name
@@ -132,25 +135,8 @@ func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
 	return labels, labels.metricName, err
 }
 
-func (l *Labels) isEmpty() bool {
-	return l.names == nil
-}
-
 func (l *Labels) String() string {
 	return l.str
-}
-
-func (l *Labels) reset() {
-	l.metricName = ""
-	for i := range l.names {
-		l.names[i] = ""
-	}
-	l.names = l.names[:0]
-	for i := range l.values {
-		l.values[i] = ""
-	}
-	l.values = l.values[:0]
-	l.str = ""
 }
 
 // Compare returns a comparison int between two Labels

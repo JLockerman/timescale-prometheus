@@ -12,12 +12,6 @@ var wrPool = sync.Pool{
 	},
 }
 
-var lPool = sync.Pool{
-	New: func() interface{} {
-		return new(Labels)
-	},
-}
-
 func NewWriteRequest() *prompb.WriteRequest {
 	return wrPool.Get().(*prompb.WriteRequest)
 }
