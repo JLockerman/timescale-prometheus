@@ -209,7 +209,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, cfg *Cfg) (*pgxInserter, er
 
 	// we leavel one connection per-core for other usages
 	numCopiers := maxProcs * 4
-	toCopiers := make(chan copyRequest, numCopiers*2)
+	toCopiers := make(chan copyRequest, numCopiers)
 	for i := 0; i < numCopiers; i++ {
 		go runCopyFrom(conn, toCopiers)
 	}
@@ -434,6 +434,8 @@ type insertHandler struct {
 	seriesCache     map[string]SeriesID
 	metricTableName string
 	toCopiers       chan copyRequest
+	timer           *time.Timer
+	bufferStart     time.Time
 }
 
 type pendingBuffer struct {
@@ -443,7 +445,7 @@ type pendingBuffer struct {
 
 const (
 	flushSize    = 2000
-	flushTimeout = 500 * time.Millisecond
+	flushTimeout = 100 * time.Millisecond
 )
 
 var pendingBuffers = sync.Pool{
@@ -514,6 +516,7 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
 		toCopiers:       toCopiers,
+		timer:           time.NewTimer(-1 * time.Second),
 	}
 
 	for {
@@ -532,7 +535,9 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 			}
 		}
 
-		handler.flush()
+		if time.Now().Sub(handler.bufferStart) > flushTimeout {
+			handler.flush()
+		}
 	}
 }
 
@@ -541,13 +546,31 @@ func (h *insertHandler) hasPendingReqs() bool {
 }
 
 func (h *insertHandler) blockingHandleReq() bool {
-	req, ok := <-h.input
-	if !ok {
-		return false
+	if h.hasPendingReqs() {
+		if !h.timer.Stop() {
+			<-h.timer.C
+		}
+		deadline := h.bufferStart.Add(flushTimeout)
+		timeout := deadline.Sub(time.Now())
+		h.timer.Reset(timeout)
+		select {
+		case req, ok := <-h.input:
+			if !ok {
+				h.flush()
+				return false
+			}
+			h.handleReq(req)
+		case <-h.timer.C:
+			h.flush()
+		}
+	} else {
+		req, ok := <-h.input
+		if !ok {
+			return false
+		}
+		h.bufferStart = time.Now()
+		h.handleReq(req)
 	}
-
-	h.handleReq(req)
-
 	return true
 }
 
