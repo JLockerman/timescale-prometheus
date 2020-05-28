@@ -516,7 +516,7 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
 		toCopiers:       toCopiers,
-		timer:           time.NewTimer(-1 * time.Second),
+		timer:           time.NewTimer(1 * time.Second),
 	}
 
 	for {
@@ -549,6 +549,9 @@ func (h *insertHandler) blockingHandleReq() bool {
 		}
 		deadline := h.bufferStart.Add(flushTimeout)
 		timeout := deadline.Sub(time.Now())
+		if timeout < 0 {
+			timeout = time.Microsecond
+		}
 		h.timer.Reset(timeout)
 		select {
 		case req, ok := <-h.input:
