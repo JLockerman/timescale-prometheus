@@ -7,7 +7,6 @@ package pgmodel
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"runtime"
 	"sort"
 	"sync"
@@ -610,8 +609,8 @@ func (h *insertHandler) flushPending() {
 	}
 
 	h.pending = pendingBuffers.Get().(*pendingBuffer)
-	c := rand.Intn(len(h.copiers))
-	h.copiers[c] <- struct {
+	// c := rand.Intn(len(h.copiers))
+	h.copiers[0] <- struct {
 		p    *pendingBuffer
 		name string
 	}{pending, h.metricTableName}
