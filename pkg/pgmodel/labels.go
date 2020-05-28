@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/timescale/timescale-prometheus/pkg/prompb"
@@ -23,45 +24,48 @@ type Labels struct {
 	str        string
 }
 
-// EmptyLables returns an empty Labels object
-func EmptyLables() Labels {
-	return Labels{}
+var LabelsInterner = sync.Map{}
+
+func GetLabels(str string) (l *Labels) {
+	val, ok := LabelsInterner.Load(str)
+	if !ok {
+		return
+	}
+	l = val.(*Labels)
+	return
+}
+
+func SetLabels(str string, lset *Labels) *Labels {
+	val, _ := LabelsInterner.LoadOrStore(str, lset)
+	return val.(*Labels)
 }
 
 // LabelsFromSlice converts a labels.Labels to a Labels object
-func LabelsFromSlice(ls labels.Labels) (Labels, error) {
-	length := len(ls)
-	labels := Labels{
-		names:  make([]string, length),
-		values: make([]string, length),
+func LabelsFromSlice(ls labels.Labels) (*Labels, error) {
+	ll := make([]prompb.Label, len(ls))
+	for i := range ls {
+		ll[i].Name = ls[i].Name
+		ll[i].Value = ls[i].Value
 	}
-
-	labels.metricName = ""
-	for i, l := range ls {
-		labels.names[i] = l.Name
-		labels.values[i] = l.Value
-		if l.Name == MetricNameLabelName {
-			labels.metricName = l.Value
-		}
-	}
-
-	err := initLabels(&labels)
-	return labels, err
+	l, _, err := labelProtosToLabels(ll)
+	return l, err
 }
 
 // initLabels intializes labels
-func initLabels(l *Labels) error {
+func getStr(labels []prompb.Label) (string, error) {
 
-	if !sort.IsSorted(l) {
-		sort.Sort(l)
+	if !sort.SliceIsSorted(labels, func(i, j int) bool {
+		return labels[i].Name < labels[j].Name
+	}) {
+		sort.Slice(labels, func(i, j int) bool {
+			return labels[i].Name < labels[j].Name
+		})
 	}
 
-	length := len(l.names)
-	vals := l.values[:length]
-
-	expectedStrLen := length * 4 // 2 for the length of each key, and 2 for the lengthof each value
-	for i := 0; i < length; i++ {
-		expectedStrLen += len(l.names[i]) + len(vals[i])
+	expectedStrLen := len(labels) * 4 // 2 for the length of each key, and 2 for the length of each value
+	for i := range labels {
+		l := labels[i]
+		expectedStrLen += len(l.Name) + len(l.Value)
 	}
 
 	// BigCache cannot handle cases where the key string has a size greater than
@@ -69,7 +73,7 @@ func initLabels(l *Labels) error {
 	// total length anyway, we only use 16bits to store the legth of each substring
 	// in our string encoding
 	if expectedStrLen > math.MaxUint16 {
-		return fmt.Errorf("series too long, combined series has length %d, max length %d", expectedStrLen, ^uint16(0))
+		return "", fmt.Errorf("series too long, combined series has length %d, max length %d", expectedStrLen, ^uint16(0))
 	}
 
 	// the string representation is
@@ -80,8 +84,9 @@ func initLabels(l *Labels) error {
 	builder.Grow(expectedStrLen)
 
 	lengthBuf := make([]byte, 2)
-	for i := 0; i < length; i++ {
-		key := l.names[i]
+	for i := range labels {
+		l := labels[i]
+		key := l.Name
 
 		// this cast is safe since we check that the combined length of all the
 		// strings fit within a uint16, each string's length must also fit
@@ -90,7 +95,7 @@ func initLabels(l *Labels) error {
 		builder.WriteByte(lengthBuf[1])
 		builder.WriteString(key)
 
-		val := vals[i]
+		val := l.Value
 
 		// this cast is safe since we check that the combined length of all the
 		// strings fit within a uint16, each string's length must also fit
@@ -100,26 +105,29 @@ func initLabels(l *Labels) error {
 		builder.WriteString(val)
 	}
 
-	l.str = builder.String()
-
-	return nil
+	return builder.String(), nil
 }
 
 func labelProtosToLabels(labelPairs []prompb.Label) (*Labels, string, error) {
-	length := len(labelPairs)
-	labels := NewLabels(length)
-
-	labels.metricName = ""
-
-	for i, l := range labelPairs {
-		labels.names[i] = l.Name
-		labels.values[i] = l.Value
-		if l.Name == MetricNameLabelName {
-			labels.metricName = l.Value
+	str, err := getStr(labelPairs)
+	if err != nil {
+		return nil, "", err
+	}
+	labels := GetLabels(str)
+	if labels == nil {
+		labels = new(Labels)
+		labels.str = str
+		labels.names = make([]string, len(labelPairs))
+		labels.values = make([]string, len(labelPairs))
+		for i, l := range labelPairs {
+			labels.names[i] = l.Name
+			labels.values[i] = l.Value
+			if l.Name == MetricNameLabelName {
+				labels.metricName = l.Value
+			}
+			labels = SetLabels(str, labels)
 		}
 	}
-
-	err := initLabels(labels)
 
 	return labels, labels.metricName, err
 }

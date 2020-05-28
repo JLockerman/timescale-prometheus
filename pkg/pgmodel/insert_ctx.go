@@ -36,20 +36,3 @@ func FinishWriteRequest(wr *prompb.WriteRequest) {
 	wr.XXX_unrecognized = nil
 	wrPool.Put(wr)
 }
-
-func NewLabels(length int) *Labels {
-	l := lPool.Get().(*Labels)
-	if cap(l.names) >= length {
-		l.names = l.names[:length]
-		l.values = l.values[:length]
-	} else {
-		l.names = make([]string, length)
-		l.values = make([]string, length)
-	}
-	return l
-}
-
-func FinishLabels(l *Labels) {
-	l.reset()
-	lPool.Put(l)
-}
