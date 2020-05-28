@@ -198,7 +198,7 @@ func NewPgxIngestor(c *pgxpool.Pool) (*DBIngestor, error) {
 
 func newPgxInserter(conn pgxConn, cache MetricCache, cfg *Cfg) (*pgxInserter, error) {
 	cmc := make(chan struct{}, 1)
-
+	runtime.SetBlockProfileRate(1000)
 	maxProcs := runtime.GOMAXPROCS(-1)
 	if maxProcs <= 0 {
 		maxProcs = runtime.NumCPU()
