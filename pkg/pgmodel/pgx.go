@@ -396,7 +396,7 @@ func (p *pgxInserter) getMetricTableName(metric string) (string, error) {
 func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
 	inserter, ok := p.inserters.Load(metric)
 	if !ok {
-		c := make(chan insertDataRequest, 1000)
+		c := make(chan insertDataRequest, 10)
 		actual, old := p.inserters.LoadOrStore(metric, c)
 		inserter = actual
 		if !old {
