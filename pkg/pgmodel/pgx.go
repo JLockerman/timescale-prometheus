@@ -203,7 +203,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInsert
 	if maxProcs <= 0 {
 		maxProcs = 1
 	}
-	numInserters := 4 * maxProcs
+	numInserters := 10*maxProcs - 1
 
 	inserter := &pgxInserter{
 		conn:                   conn,
@@ -396,7 +396,7 @@ func (p *pgxInserter) getMetricTableName(metric string) (string, error) {
 func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan insertDataRequest {
 	inserter, ok := p.inserters.Load(metric)
 	if !ok {
-		c := make(chan insertDataRequest, 10)
+		c := make(chan insertDataRequest, 1000)
 		actual, old := p.inserters.LoadOrStore(metric, c)
 		inserter = actual
 		if !old {
