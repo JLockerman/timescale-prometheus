@@ -559,9 +559,9 @@ func (h *insertHandler) blockingHandleReq() bool {
 			}
 			h.handleReq(req)
 		case <-h.timer.C:
-			h.flush()
 		}
 	} else {
+		fmt.Printf("wait for new req\n")
 		req, ok := <-h.input
 		if !ok {
 			return false
