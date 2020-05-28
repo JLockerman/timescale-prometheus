@@ -520,12 +520,9 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 	}
 
 	for {
-		if !handler.hasPendingReqs() {
-			stillAlive := handler.blockingHandleReq()
-			if !stillAlive {
-				return
-			}
-			continue
+		stillAlive := handler.blockingHandleReq()
+		if !stillAlive {
+			return
 		}
 
 	hotReceive:
