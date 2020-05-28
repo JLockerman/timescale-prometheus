@@ -7,6 +7,8 @@ package pgmodel
 import (
 	"context"
 	"fmt"
+	"math/rand"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -194,11 +196,32 @@ func NewPgxIngestor(c *pgxpool.Pool) (*DBIngestor, error) {
 func newPgxInserter(conn pgxConn, cache MetricCache, asyncAcks bool) (*pgxInserter, error) {
 	cmc := make(chan struct{}, 1)
 
+	maxProcs := runtime.GOMAXPROCS(-1)
+	if maxProcs <= 0 {
+		maxProcs = runtime.NumCPU()
+	}
+	if maxProcs <= 0 {
+		maxProcs = 1
+	}
+	numInserters := 5*maxProcs - 1
+
 	inserter := &pgxInserter{
 		conn:                   conn,
 		metricTableNames:       cache,
 		completeMetricCreation: cmc,
 		asyncAcks:              asyncAcks,
+		copiers: make([]chan struct {
+			p    *pendingBuffer
+			name string
+		}, numInserters),
+	}
+	for i := range inserter.copiers {
+		c := make(chan struct {
+			p    *pendingBuffer
+			name string
+		}, 1000)
+		inserter.copiers[i] = c
+		go runCopyFrom(conn, c)
 	}
 	if asyncAcks {
 		inserter.insertedDatapoints = new(uint64)
@@ -230,6 +253,10 @@ type pgxInserter struct {
 	completeMetricCreation chan struct{}
 	asyncAcks              bool
 	insertedDatapoints     *uint64
+	copiers                []chan struct {
+		p    *pendingBuffer
+		name string
+	}
 }
 
 func (p *pgxInserter) CompleteMetricCreation() error {
@@ -373,7 +400,7 @@ func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan 
 		actual, old := p.inserters.LoadOrStore(metric, c)
 		inserter = actual
 		if !old {
-			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames)
+			go runInserterRoutine(p.conn, c, metric, p.completeMetricCreation, errChan, p.metricTableNames, p.copiers)
 		}
 	}
 	return inserter.(chan insertDataRequest)
@@ -394,6 +421,10 @@ type insertHandler struct {
 	pending         *pendingBuffer
 	seriesCache     map[string]SeriesID
 	metricTableName string
+	copiers         []chan struct {
+		p    *pendingBuffer
+		name string
+	}
 }
 
 type pendingBuffer struct {
@@ -441,7 +472,10 @@ func runInserterRoutineFailure(input chan insertDataRequest, err error) {
 	}
 }
 
-func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName string, completeMetricCreationSignal chan struct{}, errChan chan error, metricTableNames MetricCache) {
+func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName string, completeMetricCreationSignal chan struct{}, errChan chan error, metricTableNames MetricCache, copiers []chan struct {
+	p    *pendingBuffer
+	name string
+}) {
 	tableName, err := metricTableNames.Get(metricName)
 	if err == ErrEntryNotFound {
 		var possiblyNew bool
@@ -484,6 +518,7 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 		pending:         pendingBuffers.Get().(*pendingBuffer),
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
+		copiers:         copiers,
 	}
 
 	for {
@@ -575,19 +610,35 @@ func (h *insertHandler) flushPending() {
 	}
 
 	h.pending = pendingBuffers.Get().(*pendingBuffer)
+	c := rand.Intn(len(h.copiers))
+	h.copiers[c] <- struct {
+		p    *pendingBuffer
+		name string
+	}{pending, h.metricTableName}
+}
 
-	tableName := h.metricTableName
-	conn := h.conn
-	go func() {
-		_, err = conn.CopyFrom(
-			context.Background(),
-			pgx.Identifier{dataSchema, tableName},
-			copyColumns,
-			&pending.batch,
-		)
-		pending.finish(err)
-		pendingBuffers.Put(pending)
-	}()
+func runCopyFrom(conn pgxConn, c chan struct {
+	p    *pendingBuffer
+	name string
+}) {
+	for {
+		v, ok := <-c
+		if !ok {
+			return
+		}
+		tableName := v.name
+		pending := v.p
+		go func() {
+			_, err := conn.CopyFrom(
+				context.Background(),
+				pgx.Identifier{dataSchema, tableName},
+				copyColumns,
+				&pending.batch,
+			)
+			pending.finish(err)
+			pendingBuffers.Put(pending)
+		}()
+	}
 }
 
 func (pending *pendingBuffer) finish(err error) {
