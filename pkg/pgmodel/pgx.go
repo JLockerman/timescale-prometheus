@@ -380,7 +380,12 @@ func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan 
 }
 
 var pendingBuffers = sync.Pool{
-	New: func() interface{} { return &pendingBuffer{make([]insertDataTask, 0), NewSampleInfoIterator()} },
+	New: func() interface{} {
+		pb := new(pendingBuffer)
+		pb.needsResponse = make([]insertDataTask, 0)
+		pb.batch = NewSampleInfoIterator()
+		return pb
+	},
 }
 
 type insertHandler struct {
@@ -476,7 +481,7 @@ func runInserterRoutine(conn pgxConn, input chan insertDataRequest, metricName s
 	handler := insertHandler{
 		conn:            conn,
 		input:           input,
-		pending:         &pendingBuffer{make([]insertDataTask, 0), NewSampleInfoIterator()},
+		pending:         pendingBuffers.Get().(*pendingBuffer),
 		seriesCache:     make(map[string]SeriesID),
 		metricTableName: tableName,
 	}
@@ -581,7 +586,7 @@ func (h *insertHandler) flushPending() {
 			&pending.batch,
 		)
 		pending.finish(err)
-		pendingBuffers.Put(h.pending)
+		pendingBuffers.Put(pending)
 	}()
 }
 
