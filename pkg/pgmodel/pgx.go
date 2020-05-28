@@ -566,6 +566,7 @@ func (h *insertHandler) flushPending() {
 
 	if err != nil {
 		pending.finish(err)
+		return
 	}
 
 	h.pending = pendingBuffers.Get().(*pendingBuffer)
