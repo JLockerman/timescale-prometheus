@@ -209,7 +209,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, cfg *Cfg) (*pgxInserter, er
 
 	// we leavel one connection per-core for other usages
 	numCopiers := maxProcs * 4
-	toCopiers := make(chan copyRequest, numCopiers)
+	toCopiers := make(chan copyRequest, numCopiers*2)
 	for i := 0; i < numCopiers; i++ {
 		go runCopyFrom(conn, toCopiers)
 	}
