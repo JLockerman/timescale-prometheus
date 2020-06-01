@@ -293,75 +293,75 @@ func migrate(cfg *pgclient.Config) error {
 
 func write(writer pgmodel.DBInserter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		shouldWrite, err := isWriter()
-		if err != nil {
-			leaderGauge.Set(0)
-			log.Error("msg", "IsLeader check failed", "err", err)
-			return
-		}
-		if !shouldWrite {
-			leaderGauge.Set(0)
-			log.Debug("msg", fmt.Sprintf("Election id %v: Instance is not a leader. Can't write data", elector.ID()))
-			return
-		}
+		// shouldWrite, err := isWriter()
+		// if err != nil {
+		// 	leaderGauge.Set(0)
+		// 	log.Error("msg", "IsLeader check failed", "err", err)
+		// 	return
+		// }
+		// if !shouldWrite {
+		// 	leaderGauge.Set(0)
+		// 	log.Debug("msg", fmt.Sprintf("Election id %v: Instance is not a leader. Can't write data", elector.ID()))
+		// 	return
+		// }
 
-		leaderGauge.Set(1)
+		// leaderGauge.Set(1)
 
-		compressed, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			log.Error("msg", "Read error", "err", err.Error())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		// compressed, err := ioutil.ReadAll(r.Body)
+		// if err != nil {
+		// 	log.Error("msg", "Read error", "err", err.Error())
+		// 	http.Error(w, err.Error(), http.StatusInternalServerError)
+		// 	return
+		// }
 
-		atomic.StoreInt64(&lastRequestUnixNano, time.Now().UnixNano())
+		// atomic.StoreInt64(&lastRequestUnixNano, time.Now().UnixNano())
 
-		reqBuf, err := snappy.Decode(nil, compressed)
-		if err != nil {
-			log.Error("msg", "Decode error", "err", err.Error())
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		// reqBuf, err := snappy.Decode(nil, compressed)
+		// if err != nil {
+		// 	log.Error("msg", "Decode error", "err", err.Error())
+		// 	http.Error(w, err.Error(), http.StatusBadRequest)
+		// 	return
+		// }
 
-		req := pgmodel.NewWriteRequest()
-		if err := proto.Unmarshal(reqBuf, req); err != nil {
-			log.Error("msg", "Unmarshal error", "err", err.Error())
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		// req := pgmodel.NewWriteRequest()
+		// if err := proto.Unmarshal(reqBuf, req); err != nil {
+		// 	log.Error("msg", "Unmarshal error", "err", err.Error())
+		// 	http.Error(w, err.Error(), http.StatusBadRequest)
+		// 	return
+		// }
 
-		ts := req.GetTimeseries()
-		receivedBatchCount := 0
+		// ts := req.GetTimeseries()
+		// receivedBatchCount := 0
 
-		for _, t := range ts {
-			receivedBatchCount = receivedBatchCount + len(t.Samples)
-		}
+		// for _, t := range ts {
+		// 	receivedBatchCount = receivedBatchCount + len(t.Samples)
+		// }
 
-		receivedSamples.Add(float64(receivedBatchCount))
-		begin := time.Now()
+		// receivedSamples.Add(float64(receivedBatchCount))
+		// begin := time.Now()
 
-		numSamples, err := writer.Ingest(req.GetTimeseries(), req)
-		if err != nil {
-			log.Warn("msg", "Error sending samples to remote storage", "err", err, "num_samples", numSamples)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			failedSamples.Add(float64(receivedBatchCount))
-			return
-		}
+		// numSamples, err := writer.Ingest(req.GetTimeseries(), req)
+		// if err != nil {
+		// 	log.Warn("msg", "Error sending samples to remote storage", "err", err, "num_samples", numSamples)
+		// 	http.Error(w, err.Error(), http.StatusInternalServerError)
+		// 	failedSamples.Add(float64(receivedBatchCount))
+		// 	return
+		// }
 
-		duration := time.Since(begin).Seconds()
+		// duration := time.Since(begin).Seconds()
 
-		sentSamples.Add(float64(numSamples))
-		sentBatchDuration.Observe(duration)
+		// sentSamples.Add(float64(numSamples))
+		// sentBatchDuration.Observe(duration)
 
-		writeThroughput.SetCurrent(getCounterValue(sentSamples))
+		// writeThroughput.SetCurrent(getCounterValue(sentSamples))
 
-		select {
-		case d := <-writeThroughput.Values:
-			if reportTput {
-				log.Info("msg", "Samples write throughput", "samples/sec", d)
-			}
-		default:
-		}
+		// select {
+		// case d := <-writeThroughput.Values:
+		// 	if reportTput {
+		// 		log.Info("msg", "Samples write throughput", "samples/sec", d)
+		// 	}
+		// default:
+		// }
 
 	})
 }
