@@ -38,7 +38,7 @@ type mockPGXConn struct {
 	QueryErr          map[int]error // Mapping query call to error response.
 	CopyFromTableName []pgx.Identifier
 	CopyFromColumns   [][]string
-	CopyFromRowSource [][]samplesInfo
+	CopyFromRowSource [][]SamplesInfo
 	CopyFromResult    int64
 	CopyFromError     error
 	CopyFromRowsRows  [][]interface{}
@@ -79,7 +79,7 @@ func (m *mockPGXConn) CopyFrom(ctx context.Context, tableName pgx.Identifier, co
 	m.CopyFromTableName = append(m.CopyFromTableName, tableName)
 	m.CopyFromColumns = append(m.CopyFromColumns, columnNames)
 	src := rowSrc.(*SampleInfoIterator)
-	rows := make([]samplesInfo, 0, len(src.sampleInfos))
+	rows := make([]SamplesInfo, 0, len(src.sampleInfos))
 	rows = append(rows, src.sampleInfos...)
 	m.CopyFromRowSource = append(m.CopyFromRowSource, rows)
 	return m.CopyFromResult, m.CopyFromError
@@ -399,13 +399,13 @@ func TestPGXInserterInsertSeries(t *testing.T) {
 
 			inserter := insertHandler{conn: mock, seriesCache: make(map[string]SeriesID)}
 
-			lsi := make([]samplesInfo, 0)
+			lsi := make([]SamplesInfo, 0)
 			for _, ser := range c.series {
 				ls, err := LabelsFromSlice(*ser)
 				if err != nil {
 					t.Errorf("invalid labels %+v, %v", ls, err)
 				}
-				lsi = append(lsi, samplesInfo{labels: ls, seriesID: -1})
+				lsi = append(lsi, SamplesInfo{labels: ls, SeriesID: -1})
 			}
 
 			_, err := inserter.setSeriesIds(lsi)
@@ -424,7 +424,7 @@ func TestPGXInserterInsertSeries(t *testing.T) {
 			}
 
 			for _, si := range lsi {
-				if si.seriesID <= 0 {
+				if si.SeriesID <= 0 {
 					t.Error("Series not set")
 				}
 			}
@@ -436,12 +436,12 @@ func TestPGXInserterInsertSeries(t *testing.T) {
 	}
 }
 
-func createRows(x int) map[string][]samplesInfo {
+func createRows(x int) map[string][]SamplesInfo {
 	return createRowsByMetric(x, 1)
 }
 
-func createRowsByMetric(x int, metricCount int) map[string][]samplesInfo {
-	ret := make(map[string][]samplesInfo)
+func createRowsByMetric(x int, metricCount int) map[string][]SamplesInfo {
+	ret := make(map[string][]SamplesInfo)
 	i := 0
 
 	metrics := make([]string, 0, metricCount)
@@ -456,7 +456,7 @@ func createRowsByMetric(x int, metricCount int) map[string][]samplesInfo {
 	for i < x {
 		metricIndex := i % metricCount
 
-		ret[metrics[metricIndex]] = append(ret[metrics[metricIndex]], samplesInfo{})
+		ret[metrics[metricIndex]] = append(ret[metrics[metricIndex]], SamplesInfo{})
 		i++
 	}
 	return ret
@@ -465,7 +465,7 @@ func createRowsByMetric(x int, metricCount int) map[string][]samplesInfo {
 func TestPGXInserterInsertData(t *testing.T) {
 	testCases := []struct {
 		name           string
-		rows           map[string][]samplesInfo
+		rows           map[string][]SamplesInfo
 		queryNoRows    bool
 		queryErr       map[int]error
 		copyFromResult int64

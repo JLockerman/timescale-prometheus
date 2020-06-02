@@ -36,7 +36,7 @@ func (m *mockCache) SetSeries(lset Labels, id SeriesID) error {
 
 type mockInserter struct {
 	insertedSeries  map[string]SeriesID
-	insertedData    []map[string][]samplesInfo
+	insertedData    []map[string][]SamplesInfo
 	insertSeriesErr error
 	insertDataErr   error
 }
@@ -45,7 +45,7 @@ func (m *mockInserter) Close() {
 
 }
 
-func (m *mockInserter) InsertNewData(rows map[string][]samplesInfo) (uint64, error) {
+func (m *mockInserter) InsertNewData(rows map[string][]SamplesInfo) (uint64, error) {
 	return m.InsertData(rows)
 }
 
@@ -53,7 +53,7 @@ func (m *mockInserter) CompleteMetricCreation() error {
 	return nil
 }
 
-func (m *mockInserter) InsertData(rows map[string][]samplesInfo) (uint64, error) {
+func (m *mockInserter) InsertData(rows map[string][]SamplesInfo) (uint64, error) {
 	for _, v := range rows {
 		for i, si := range v {
 			id, ok := m.insertedSeries[si.labels.String()]
@@ -61,7 +61,7 @@ func (m *mockInserter) InsertData(rows map[string][]samplesInfo) (uint64, error)
 				id = SeriesID(len(m.insertedSeries))
 				m.insertedSeries[si.labels.String()] = id
 			}
-			v[i].seriesID = id
+			v[i].SeriesID = id
 		}
 	}
 	if m.insertSeriesErr != nil {
@@ -71,7 +71,7 @@ func (m *mockInserter) InsertData(rows map[string][]samplesInfo) (uint64, error)
 	ret := 0
 	for _, data := range rows {
 		for _, si := range data {
-			ret += len(si.samples)
+			ret += len(si.Samples)
 		}
 	}
 	if m.insertDataErr != nil {

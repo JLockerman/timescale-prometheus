@@ -9,6 +9,7 @@ import (
 	io "io"
 	math "math"
 	math_bits "math/bits"
+	time "time"
 
 	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
@@ -83,11 +84,11 @@ func (Chunk_Encoding) EnumDescriptor() ([]byte, []int) {
 }
 
 type Sample struct {
-	Value                float64  `protobuf:"fixed64,1,opt,name=value,proto3" json:"value,omitempty"`
-	Timestamp            int64    `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	XXX_NoUnkeyedLiteral struct{} `json:"-"`
-	XXX_unrecognized     []byte   `json:"-"`
-	XXX_sizecache        int32    `json:"-"`
+	Value                float64   `protobuf:"fixed64,1,opt,name=value,proto3" json:"value,omitempty"`
+	Timestamp            time.Time `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}  `json:"-"`
+	XXX_unrecognized     []byte    `json:"-"`
+	XXX_sizecache        int32     `json:"-"`
 }
 
 func (m *Sample) Reset()         { *m = Sample{} }
@@ -132,7 +133,7 @@ func (m *Sample) GetValue() float64 {
 
 func (m *Sample) GetTimestamp() int64 {
 	if m != nil {
-		return m.Timestamp
+		// return m.Timestamp
 	}
 	return 0
 }
@@ -662,11 +663,11 @@ func (m *Sample) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i -= len(m.XXX_unrecognized)
 		copy(dAtA[i:], m.XXX_unrecognized)
 	}
-	if m.Timestamp != 0 {
-		i = encodeVarintTypes(dAtA, i, uint64(m.Timestamp))
-		i--
-		dAtA[i] = 0x10
-	}
+	// if m.Timestamp != 0 {
+	// 	i = encodeVarintTypes(dAtA, i, uint64(m.Timestamp))
+	// 	i--
+	// 	dAtA[i] = 0x10
+	// }
 	if m.Value != 0 {
 		i -= 8
 		encoding_binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.Value))))
@@ -1056,9 +1057,9 @@ func (m *Sample) Size() (n int) {
 	if m.Value != 0 {
 		n += 9
 	}
-	if m.Timestamp != 0 {
-		n += 1 + sovTypes(uint64(m.Timestamp))
-	}
+	// if m.Timestamp != 0 {
+	// 	n += 1 + sovTypes(uint64(m.Timestamp))
+	// }
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
 	}
@@ -1286,7 +1287,7 @@ func (m *Sample) Unmarshal(dAtA []byte) error {
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Timestamp", wireType)
 			}
-			m.Timestamp = 0
+			// m.Timestamp = 0
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowTypes
@@ -1296,7 +1297,7 @@ func (m *Sample) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.Timestamp |= int64(b&0x7F) << shift
+				// m.Timestamp |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

@@ -5,14 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
 
-	"github.com/allegro/bigcache"
 	"github.com/jackc/pgx/v4/pgxpool"
 
+	"github.com/timescale/timescale-prometheus/pkg/pgmodel"
 	"github.com/timescale/timescale-prometheus/pkg/prompb"
 
 	"github.com/timescale/timescale-prometheus/pkg/log"
-	"github.com/timescale/timescale-prometheus/pkg/pgmodel"
 	"github.com/timescale/timescale-prometheus/pkg/util"
 )
 
@@ -27,6 +29,8 @@ type Config struct {
 	dbConnectRetries int
 	AsyncAcks        bool
 	ReportInterval   int
+	NumInserters     int
+	BatchSize        int
 }
 
 // ParseFlags parses the configuration flags specific to PostgreSQL and TimescaleDB
@@ -40,16 +44,17 @@ func ParseFlags(cfg *Config) *Config {
 	flag.IntVar(&cfg.dbConnectRetries, "db-connect-retries", 0, "How many times to retry connecting to the database")
 	flag.BoolVar(&cfg.AsyncAcks, "async-acks", false, "Ack before data is written to DB")
 	flag.IntVar(&cfg.ReportInterval, "tput-report", 0, "interval in seconds at which throughput should be reported")
+	flag.IntVar(&cfg.NumInserters, "inserters", 1, "number of workers inserting concurrently")
+	flag.IntVar(&cfg.BatchSize, "batch-size", 1, "how much to insert at once")
 	return cfg
 }
 
 // Client sends Prometheus samples to TimescaleDB
 type Client struct {
 	Connection    *pgxpool.Pool
-	ingestor      *pgmodel.DBIngestor
-	reader        *pgmodel.DBReader
 	cfg           *Config
 	ConnectionStr string
+	counters      []int64
 }
 
 // NewClient creates a new PostgreSQL client
@@ -63,7 +68,7 @@ func NewClient(cfg *Config) (*Client, error) {
 	if maxProcs <= 0 {
 		maxProcs = 1
 	}
-	connectionPool, err := pgxpool.Connect(context.Background(), connectionStr+fmt.Sprintf(" pool_max_conns=%d pool_min_conns=%d", maxProcs*pgmodel.ConnectionsPerProc, maxProcs))
+	connectionPool, err := pgxpool.Connect(context.Background(), connectionStr+fmt.Sprintf(" pool_max_conns=%d pool_min_conns=%d", cfg.NumInserters, cfg.NumInserters))
 
 	log.Info("msg", util.MaskPassword(connectionStr))
 
@@ -72,18 +77,9 @@ func NewClient(cfg *Config) (*Client, error) {
 		return nil, err
 	}
 
-	metrics, _ := bigcache.NewBigCache(pgmodel.DefaultCacheConfig())
-	cache := &pgmodel.MetricNameCache{Metrics: metrics}
+	counters := make([]int64, cfg.NumInserters)
 
-	c := pgmodel.Cfg{AsyncAcks: cfg.AsyncAcks, ReportInterval: cfg.ReportInterval}
-	ingestor, err := pgmodel.NewPgxIngestorWithMetricCache(connectionPool, cache, &c)
-	if err != nil {
-		log.Error("err starting ingestor", err)
-		return nil, err
-	}
-	reader := pgmodel.NewPgxReaderWithMetricCache(connectionPool, cache)
-
-	return &Client{Connection: connectionPool, ingestor: ingestor, reader: reader, cfg: cfg}, nil
+	return &Client{Connection: connectionPool, cfg: cfg, counters: counters}, nil
 }
 
 // GetConnectionStr returns a Postgres connection string
@@ -92,22 +88,66 @@ func (cfg *Config) GetConnectionStr() string {
 		cfg.host, cfg.port, cfg.user, cfg.database, cfg.password, cfg.sslMode)
 }
 
+func (c *Client) Run() {
+	connection := pgmodel.NewPgxConnImpl(c.Connection)
+	conn := &connection
+	batchSize := c.cfg.BatchSize
+	allReady := &sync.WaitGroup{}
+	allReady.Add(len(c.counters) + 1)
+	for i := 0; i < len(c.counters); i++ {
+		myIdx := i
+		go func() {
+			iter := pgmodel.NewSampleInfoIterator()
+			samples := pgmodel.SamplesInfo{SeriesID: pgmodel.SeriesID(myIdx), Samples: make([]prompb.Sample, batchSize)}
+			iter.Append(samples)
+			seriesStartTime := time.Date(2100, 3, 3, 1, 1, 0, 0, time.UTC)
+			tableName, _, err := pgmodel.GetMetricTableName(conn, fmt.Sprintf("metric%d", myIdx))
+			if err != nil {
+				panic(err)
+			}
+			// startTimestamp := prompb.Time
+			allReady.Done()
+			allReady.Wait()
+			for iters := 0; true; iters++ {
+				for i := range samples.Samples {
+					samples.Samples[i] = prompb.Sample{
+						Value:     1.0,
+						Timestamp: seriesStartTime.Add(time.Duration(i*178+iters*batchSize) * time.Microsecond),
+					}
+				}
+				pgmodel.RunCopyFrom(conn, &iter, tableName)
+				atomic.AddInt64(&c.counters[myIdx], int64(batchSize))
+				iter.ResetPosition()
+			}
+		}()
+	}
+
+	prevCounters := make([]int64, len(c.counters))
+	allReady.Done()
+	allReady.Wait()
+	tick := time.NewTicker(time.Duration(c.cfg.ReportInterval) * time.Second)
+	start := time.Now()
+	fmt.Printf("batch size: %6d\n   workers: %6d\n", c.cfg.BatchSize, c.cfg.NumInserters)
+	fmt.Printf(" %7s, %10s, %10s\n", "elapsed", "samples/s", "overall samples/s")
+	for {
+		<-tick.C
+		elapsed := int64(time.Since(start).Seconds())
+		totalSentThisTick := int64(0)
+		totalSent := int64(0)
+		for i := range c.counters {
+			total := atomic.LoadInt64(&c.counters[i])
+			sentThisTick := total - prevCounters[i]
+			prevCounters[i] = total
+			totalSentThisTick += sentThisTick
+			totalSent += total
+		}
+		rateThisTick := totalSentThisTick / int64(c.cfg.ReportInterval)
+		overallRate := totalSent / elapsed
+		fmt.Printf("%7ds, %10d, %10d\n", elapsed, rateThisTick, overallRate)
+	}
+}
+
 // Close closes the client and performs cleanup
 func (c *Client) Close() {
-	c.ingestor.Close()
-}
-
-// Ingest writes the timeseries object into the DB
-func (c *Client) Ingest(tts []prompb.TimeSeries, req *prompb.WriteRequest) (uint64, error) {
-	return c.ingestor.Ingest(tts, req)
-}
-
-// Read returns the promQL query results
-func (c *Client) Read(req *prompb.ReadRequest) (*prompb.ReadResponse, error) {
-	return c.reader.Read(req)
-}
-
-// HealthCheck checks that the client is properly connected
-func (c *Client) HealthCheck() error {
-	return c.reader.HealthCheck()
+	c.Connection.Close()
 }

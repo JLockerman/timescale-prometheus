@@ -190,20 +190,21 @@ func main() {
 		os.Exit(1)
 	}
 	defer client.Close()
+	client.Run()
 
-	http.Handle("/write", timeHandler(httpRequestDuration, "write", write(client)))
-	http.Handle("/read", timeHandler(httpRequestDuration, "read", read(client)))
-	http.Handle("/healthz", health(client))
+	// http.Handle("/write", timeHandler(httpRequestDuration, "write", write(client)))
+	// http.Handle("/read", timeHandler(httpRequestDuration, "read", read(client)))
+	// http.Handle("/healthz", health(client))
 
-	log.Info("msg", "Starting up...")
-	log.Info("msg", "Listening", "addr", cfg.listenAddr)
+	// log.Info("msg", "Starting up...")
+	// log.Info("msg", "Listening", "addr", cfg.listenAddr)
 
-	err = http.ListenAndServe(cfg.listenAddr, nil)
+	// err = http.ListenAndServe(cfg.listenAddr, nil)
 
-	if err != nil {
-		log.Error("msg", "Listen failure", "err", err)
-		os.Exit(1)
-	}
+	// if err != nil {
+	// 	log.Error("msg", "Listen failure", "err", err)
+	// 	os.Exit(1)
+	// }
 }
 
 func parseFlags() *config {

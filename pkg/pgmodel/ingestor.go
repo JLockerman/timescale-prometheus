@@ -24,7 +24,7 @@ type SeriesID int64
 
 // inserter is responsible for inserting label, series and data into the storage.
 type inserter interface {
-	InsertNewData(rows map[string][]samplesInfo) (uint64, error)
+	InsertNewData(rows map[string][]SamplesInfo) (uint64, error)
 	CompleteMetricCreation() error
 	Close()
 }
@@ -40,10 +40,10 @@ type Cache interface {
 	SetSeries(lset Labels, id SeriesID) error
 }
 
-type samplesInfo struct {
+type SamplesInfo struct {
 	labels   *Labels
-	seriesID SeriesID
-	samples  []prompb.Sample
+	SeriesID SeriesID
+	Samples  []prompb.Sample
 }
 
 // DBIngestor ingest the TimeSeries data into Timescale database.
@@ -71,8 +71,8 @@ func (i *DBIngestor) CompleteMetricCreation() error {
 	return i.db.CompleteMetricCreation()
 }
 
-func (i *DBIngestor) parseData(tts []prompb.TimeSeries, req *prompb.WriteRequest) (map[string][]samplesInfo, int, error) {
-	dataSamples := make(map[string][]samplesInfo)
+func (i *DBIngestor) parseData(tts []prompb.TimeSeries, req *prompb.WriteRequest) (map[string][]SamplesInfo, int, error) {
+	dataSamples := make(map[string][]SamplesInfo)
 	rows := 0
 
 	for _, t := range tts {
@@ -87,7 +87,7 @@ func (i *DBIngestor) parseData(tts []prompb.TimeSeries, req *prompb.WriteRequest
 		if metricName == "" {
 			return nil, rows, ErrNoMetricName
 		}
-		sample := samplesInfo{
+		sample := SamplesInfo{
 			seriesLabels,
 			-1, //sentinel marking the seriesId as unset
 			t.Samples,

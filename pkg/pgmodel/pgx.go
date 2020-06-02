@@ -10,7 +10,6 @@ import (
 	"math"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,47 +66,51 @@ type MetricCache interface {
 	Set(metric string, tableName string) error
 }
 
-type pgxConnImpl struct {
+type PgxConnImpl struct {
 	conn *pgxpool.Pool
 }
 
-func (p *pgxConnImpl) getConn() *pgxpool.Pool {
+func NewPgxConnImpl(conn *pgxpool.Pool) PgxConnImpl {
+	return PgxConnImpl{conn}
+}
+
+func (p *PgxConnImpl) getConn() *pgxpool.Pool {
 	return p.conn
 }
 
-func (p *pgxConnImpl) Close() {
+func (p *PgxConnImpl) Close() {
 	conn := p.getConn()
 	p.conn = nil
 	conn.Close()
 }
 
-func (p *pgxConnImpl) Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error) {
+func (p *PgxConnImpl) Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error) {
 	conn := p.getConn()
 
 	return conn.Exec(ctx, sql, arguments...)
 }
 
-func (p *pgxConnImpl) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+func (p *PgxConnImpl) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
 	conn := p.getConn()
 
 	return conn.Query(ctx, sql, args...)
 }
 
-func (p *pgxConnImpl) CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error) {
+func (p *PgxConnImpl) CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error) {
 	conn := p.getConn()
 
 	return conn.CopyFrom(ctx, tableName, columnNames, rowSrc)
 }
 
-func (p *pgxConnImpl) CopyFromRows(rows [][]interface{}) pgx.CopyFromSource {
+func (p *PgxConnImpl) CopyFromRows(rows [][]interface{}) pgx.CopyFromSource {
 	return pgx.CopyFromRows(rows)
 }
 
-func (p *pgxConnImpl) NewBatch() pgxBatch {
+func (p *PgxConnImpl) NewBatch() pgxBatch {
 	return &pgx.Batch{}
 }
 
-func (p *pgxConnImpl) SendBatch(ctx context.Context, b pgxBatch) (pgx.BatchResults, error) {
+func (p *PgxConnImpl) SendBatch(ctx context.Context, b pgxBatch) (pgx.BatchResults, error) {
 	conn := p.getConn()
 
 	return conn.SendBatch(ctx, b.(*pgx.Batch)), nil
@@ -116,7 +119,7 @@ func (p *pgxConnImpl) SendBatch(ctx context.Context, b pgxBatch) (pgx.BatchResul
 // SampleInfoIterator is an iterator over a collection of sampleInfos that returns
 // data in the format expected for the data table row.
 type SampleInfoIterator struct {
-	sampleInfos     []samplesInfo
+	sampleInfos     []SamplesInfo
 	sampleInfoIndex int
 	sampleIndex     int
 	minSeen         int64
@@ -124,13 +127,13 @@ type SampleInfoIterator struct {
 
 // NewSampleInfoIterator is the constructor
 func NewSampleInfoIterator() SampleInfoIterator {
-	si := SampleInfoIterator{sampleInfos: make([]samplesInfo, 0)}
+	si := SampleInfoIterator{sampleInfos: make([]SamplesInfo, 0)}
 	si.ResetPosition()
 	return si
 }
 
 //Append adds a sample info to the back of the iterator
-func (t *SampleInfoIterator) Append(s samplesInfo) {
+func (t *SampleInfoIterator) Append(s SamplesInfo) {
 	t.sampleInfos = append(t.sampleInfos, s)
 }
 
@@ -146,7 +149,7 @@ func (t *SampleInfoIterator) ResetPosition() {
 // has occurred it returns false.
 func (t *SampleInfoIterator) Next() bool {
 	t.sampleIndex++
-	if t.sampleInfoIndex < len(t.sampleInfos) && t.sampleIndex >= len(t.sampleInfos[t.sampleInfoIndex].samples) {
+	if t.sampleInfoIndex < len(t.sampleInfos) && t.sampleIndex >= len(t.sampleInfos[t.sampleInfoIndex].Samples) {
 		t.sampleInfoIndex++
 		t.sampleIndex = 0
 	}
@@ -156,14 +159,11 @@ func (t *SampleInfoIterator) Next() bool {
 // Values returns the values for the current row
 func (t *SampleInfoIterator) Values() ([]interface{}, error) {
 	info := t.sampleInfos[t.sampleInfoIndex]
-	sample := info.samples[t.sampleIndex]
+	sample := info.Samples[t.sampleIndex]
 	row := []interface{}{
-		model.Time(sample.Timestamp).Time(),
+		sample.Timestamp,
 		sample.Value,
-		info.seriesID,
-	}
-	if t.minSeen > sample.Timestamp {
-		t.minSeen = sample.Timestamp
+		info.SeriesID,
 	}
 	return row, nil
 }
@@ -183,7 +183,7 @@ type Cfg struct {
 // for caching metric table names.
 func NewPgxIngestorWithMetricCache(c *pgxpool.Pool, cache MetricCache, cfg *Cfg) (*DBIngestor, error) {
 
-	conn := &pgxConnImpl{
+	conn := &PgxConnImpl{
 		conn: c,
 	}
 
@@ -228,7 +228,7 @@ func newPgxInserter(conn pgxConn, cache MetricCache, cfg *Cfg) (*pgxInserter, er
 	numCopiers := maxProcs*ConnectionsPerProc - maxProcs
 	toCopiers := make(chan copyRequest, numCopiers)
 	for i := 0; i < numCopiers; i++ {
-		go runCopyFrom(conn, toCopiers)
+		// go runCopyFrom(conn, toCopiers)
 	}
 
 	inserter := &pgxInserter{
@@ -298,13 +298,13 @@ func (p *pgxInserter) Close() {
 	close(p.toCopiers)
 }
 
-func (p *pgxInserter) InsertNewData(rows map[string][]samplesInfo) (uint64, error) {
+func (p *pgxInserter) InsertNewData(rows map[string][]SamplesInfo) (uint64, error) {
 	return p.InsertData(rows)
 }
 
 type insertDataRequest struct {
 	metric   string
-	data     []samplesInfo
+	data     []SamplesInfo
 	finished *sync.WaitGroup
 	errChan  chan error
 }
@@ -314,14 +314,14 @@ type insertDataTask struct {
 	errChan  chan error
 }
 
-func (p *pgxInserter) InsertData(rows map[string][]samplesInfo) (uint64, error) {
+func (p *pgxInserter) InsertData(rows map[string][]SamplesInfo) (uint64, error) {
 	var numRows uint64
 	workFinished := &sync.WaitGroup{}
 	workFinished.Add(len(rows))
 	errChan := make(chan error, 1)
 	for metricName, data := range rows {
 		for _, si := range data {
-			numRows += uint64(len(si.samples))
+			numRows += uint64(len(si.Samples))
 		}
 		p.insertMetricData(metricName, data, workFinished, errChan)
 	}
@@ -353,7 +353,7 @@ func (p *pgxInserter) InsertData(rows map[string][]samplesInfo) (uint64, error) 
 	return numRows, err
 }
 
-func (p *pgxInserter) insertMetricData(metric string, data []samplesInfo, finished *sync.WaitGroup, errChan chan error) {
+func (p *pgxInserter) insertMetricData(metric string, data []SamplesInfo, finished *sync.WaitGroup, errChan chan error) {
 	inserter := p.getMetricInserter(metric, errChan)
 	inserter <- insertDataRequest{metric: metric, data: data, finished: finished, errChan: errChan}
 }
@@ -418,6 +418,10 @@ func (p *pgxInserter) getMetricInserter(metric string, errChan chan error) chan 
 		}
 	}
 	return inserter.(chan insertDataRequest)
+}
+
+func GetMetricTableName(conn pgxConn, metric string) (string, bool, error) {
+	return getMetricTableName(conn, metric)
 }
 
 func getMetricTableName(conn pgxConn, metric string) (string, bool, error) {
@@ -588,14 +592,14 @@ func (h *insertHandler) handleReq(req insertDataRequest) bool {
 	return false
 }
 
-func (h *insertHandler) fillKnowSeriesIds(sampleInfos []samplesInfo) (numMissingSeries int) {
+func (h *insertHandler) fillKnowSeriesIds(sampleInfos []SamplesInfo) (numMissingSeries int) {
 	for i, series := range sampleInfos {
-		if series.seriesID > -1 {
+		if series.SeriesID > -1 {
 			continue
 		}
 		id, ok := h.seriesCache[series.labels.String()]
 		if ok {
-			sampleInfos[i].seriesID = id
+			sampleInfos[i].SeriesID = id
 			series.labels = nil
 		} else {
 			numMissingSeries++
@@ -622,40 +626,15 @@ func (h *insertHandler) flushPending() {
 	h.pending = pendingBuffers.Get().(*pendingBuffer)
 }
 
-func runCopyFrom(conn pgxConn, in chan copyRequest) {
-	for {
-		req, ok := <-in
-		if !ok {
-			return
-		}
-		_, err := conn.CopyFrom(
-			context.Background(),
-			pgx.Identifier{dataSchema, req.table},
-			copyColumns,
-			&req.data.batch,
-		)
-		if err != nil {
-			if pgErr, ok := err.(*pgconn.PgError); ok && strings.Contains(pgErr.Message, "insert/update/delete not permitted") {
-				/* If the error was that the table is already compressed, decompress and try again. */
-				decompressErr := decompressChunks(conn, req.data, req.table)
-				if decompressErr != nil {
-					req.data.reportResults(err)
-					pendingBuffers.Put(req.data)
-					continue
-				}
-
-				req.data.batch.ResetPosition()
-				_, err = conn.CopyFrom(
-					context.Background(),
-					pgx.Identifier{dataSchema, req.table},
-					copyColumns,
-					&req.data.batch,
-				)
-			}
-		}
-
-		req.data.reportResults(err)
-		pendingBuffers.Put(req.data)
+func RunCopyFrom(conn pgxConn, data *SampleInfoIterator, tableName string) {
+	_, err := conn.CopyFrom(
+		context.Background(),
+		pgx.Identifier{dataSchema, tableName},
+		copyColumns,
+		data,
+	)
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -708,22 +687,22 @@ func (pending *pendingBuffer) reportResults(err error) {
 
 	for i := 0; i < len(pending.batch.sampleInfos); i++ {
 		// nil all pointers to prevent memory leaks
-		pending.batch.sampleInfos[i] = samplesInfo{}
+		pending.batch.sampleInfos[i] = SamplesInfo{}
 	}
 	pending.batch = SampleInfoIterator{sampleInfos: pending.batch.sampleInfos[:0]}
 	pending.batch.ResetPosition()
 }
 
-func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) {
+func (h *insertHandler) setSeriesIds(sampleInfos []SamplesInfo) (string, error) {
 	numMissingSeries := h.fillKnowSeriesIds(sampleInfos)
 
 	if numMissingSeries == 0 {
 		return "", nil
 	}
 
-	seriesToInsert := make([]*samplesInfo, 0, numMissingSeries)
+	seriesToInsert := make([]*SamplesInfo, 0, numMissingSeries)
 	for i, series := range sampleInfos {
-		if series.seriesID < 0 {
+		if series.SeriesID < 0 {
 			seriesToInsert = append(seriesToInsert, &sampleInfos[i])
 		}
 	}
@@ -737,7 +716,7 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 		return seriesToInsert[i].labels.Compare(seriesToInsert[j].labels) < 0
 	})
 
-	batchSeries := make([][]*samplesInfo, 0, len(seriesToInsert))
+	batchSeries := make([][]*SamplesInfo, 0, len(seriesToInsert))
 	// group the seriesToInsert by labels, one slice array per unique labels
 	for _, curr := range seriesToInsert {
 		if lastSeenLabel != nil && lastSeenLabel.Equal(curr.labels) {
@@ -749,7 +728,7 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 		batch.Queue(getSeriesIDForLabelSQL, curr.labels.metricName, curr.labels.names, curr.labels.values)
 		batch.Queue("COMMIT;")
 		numSQLFunctionCalls++
-		batchSeries = append(batchSeries, []*samplesInfo{curr})
+		batchSeries = append(batchSeries, []*SamplesInfo{curr})
 
 		lastSeenLabel = curr.labels
 	}
@@ -779,7 +758,7 @@ func (h *insertHandler) setSeriesIds(sampleInfos []samplesInfo) (string, error) 
 		}
 		h.seriesCache[batchSeries[i][0].labels.String()] = id
 		for _, lsi := range batchSeries[i] {
-			lsi.seriesID = id
+			lsi.SeriesID = id
 		}
 		_, err = br.Exec()
 		if err != nil {
@@ -800,7 +779,7 @@ func (p *pendingBuffer) addReq(req insertDataRequest) bool {
 // and caches metric table names using the supplied cacher.
 func NewPgxReaderWithMetricCache(c *pgxpool.Pool, cache MetricCache) *DBReader {
 	pi := &pgxQuerier{
-		conn: &pgxConnImpl{
+		conn: &PgxConnImpl{
 			conn: c,
 		},
 		metricTableNames: cache,

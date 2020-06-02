@@ -226,8 +226,8 @@ func buildTimeSeries(rows pgx.Rows) ([]*prompb.TimeSeries, error) {
 
 		for i := range timestamps {
 			result.Samples = append(result.Samples, prompb.Sample{
-				Timestamp: toMilis(timestamps[i]),
-				Value:     values[i],
+				// Timestamp: toMilis(timestamps[i]),
+				Value: values[i],
 			})
 		}
 
