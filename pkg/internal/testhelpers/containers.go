@@ -24,11 +24,11 @@ import (
 )
 
 const (
-	defaultDB       = "postgres"
+	defaultDB       = "mat"
 	connectTemplate = "postgres://%s:password@%s:%d/%s"
 
-	postgresUser    = "postgres"
-	promUser        = "prom"
+	postgresUser    = "mat"
+	promUser        = "mat"
 	emptyPromConfig = "global:\n  scrape_interval: 10s"
 
 	Superuser   = true
@@ -39,7 +39,7 @@ var (
 	PromHost          = "localhost"
 	PromPort nat.Port = "9090/tcp"
 
-	pgHost          = "localhost"
+	pgHost          = "68.183.121.122"
 	pgPort nat.Port = "5432/tcp"
 )
 

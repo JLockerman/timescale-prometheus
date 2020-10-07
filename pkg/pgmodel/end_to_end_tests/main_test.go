@@ -27,11 +27,11 @@ import (
 var (
 	testDatabase      = flag.String("database", "tmp_db_timescale_migrate_test", "database to run integration tests on")
 	updateGoldenFiles = flag.Bool("update", false, "update the golden files of this test")
-	useDocker         = flag.Bool("use-docker", true, "start database using a docker container")
+	useDocker         = flag.Bool("use-docker", false, "start database using a docker container")
 	useExtension      = flag.Bool("use-extension", true, "use the promscale extension")
 	useTimescaleDB    = flag.Bool("use-timescaledb", true, "use TimescaleDB")
 	printLogs         = flag.Bool("print-logs", false, "print TimescaleDB logs")
-	extendedTest      = flag.Bool("extended-test", false, "run extended testing dataset and PromQL queries")
+	extendedTest      = flag.Bool("extended-test", true, "run extended testing dataset and PromQL queries")
 
 	pgContainer            testcontainers.Container
 	pgContainerTestDataDir string
@@ -48,15 +48,15 @@ func TestMain(m *testing.M) {
 		if !testing.Short() {
 			var err error
 
-			if *useDocker {
-				pgContainerTestDataDir = generatePGTestDirFiles()
+			// if *useDocker {
+			// 	pgContainerTestDataDir = generatePGTestDirFiles()
 
-				pgContainer, err = testhelpers.StartPGContainer(ctx, *useExtension, *useTimescaleDB, pgContainerTestDataDir, *printLogs)
-				if err != nil {
-					fmt.Println("Error setting up container", err)
-					os.Exit(1)
-				}
-			}
+			// 	pgContainer, err = testhelpers.StartPGContainer(ctx, *useExtension, *useTimescaleDB, pgContainerTestDataDir, *printLogs)
+			// 	if err != nil {
+			// 		fmt.Println("Error setting up container", err)
+			// 		os.Exit(1)
+			// 	}
+			// }
 
 			storagePath, err := generatePrometheusWALFile()
 			if err != nil {
@@ -103,6 +103,14 @@ func withDB(t testing.TB, DBName string, f func(db *pgxpool.Pool, t testing.TB))
 			t.Fatal(err)
 		}
 		defer db.Close()
+		_, err = db.Exec(context.Background(), "SELECT add_data_node('node2', host => '157.230.51.114');");
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec(context.Background(), "SELECT add_data_node('node3', host => '64.227.30.138');");
+		if err != nil {
+			t.Fatal(err)
+		}
 		f(db, t)
 	})
 }

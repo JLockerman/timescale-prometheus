@@ -7,8 +7,8 @@ FAILED=0
 
 SCRIPT_DIR=$(cd $(dirname ${0}) && pwd)
 ROOT_DIR=$(dirname ${SCRIPT_DIR})
-DB_URL="localhost:5432"
-CONNECTOR_URL="localhost:9201"
+DB_URL="68.183.121.122:5432"
+CONNECTOR_URL="64.225.56.61:9201"
 PROM_URL="localhost:9090"
 
 CONF=$(mktemp)
@@ -35,13 +35,15 @@ cleanup() {
     if [ -n "$CONN_PID" ]; then
         kill $CONN_PID
     fi
-    docker stop e2e-tsdb || true
+    # docker stop e2e-tsdb || true
 }
 
 trap cleanup EXIT
 
-docker run --rm --name e2e-tsdb -p 5432:5432/tcp -e "POSTGRES_PASSWORD=postgres" timescale/timescaledb:latest-pg12  > /dev/null 2>&1 &
-docker run --rm --name e2e-prom --network="host" -p 9090:9090/tcp -v "$CONF:/etc/prometheus/prometheus.yml" prom/prometheus:latest > /dev/null 2>&1  &
+# docker run --rm --name e2e-tsdb -p 5432:5432/tcp -e "POSTGRES_PASSWORD=postgres" timescale/timescaledb:latest-pg12  > /dev/null 2>&1 &
+
+echo "starting prom"
+docker run --rm --name e2e-prom -p 9090:9090/tcp -v "$CONF:/etc/prometheus/prometheus.yml" prom/prometheus:latest > /dev/null 2>&1  &
 
 cd $ROOT_DIR/cmd/promscale
 go get ./...
@@ -58,20 +60,23 @@ wait_for() {
 }
 
 echo "Waiting for database to be up..."
-wait_for "$DB_URL"
+# wait_for "$DB_URL"
 
-TS_PROM_LOG_LEVEL=debug \
-TS_PROM_DB_CONNECT_RETRIES=10 \
-TS_PROM_DB_PASSWORD=postgres \
-TS_PROM_DB_NAME=postgres \
-TS_PROM_DB_SSL_MODE=disable \
-TS_PROM_WEB_TELEMETRY_PATH=/metrics \
-./promscale &
+# TS_PROM_LOG_LEVEL=debug \
+# TS_PROM_DB_CONNECT_RETRIES=10 \
+# TS_PROM_DB_PASSWORD=postgres \
+# TS_PROM_DB_NAME=postgres \
+# TS_PROM_DB_SSL_MODE=disable \
+# TS_PROM_WEB_TELEMETRY_PATH=/metrics \
+# ./promscale &
 
 CONN_PID=$!
 
 echo "Waiting for connector to be up..."
 wait_for "$CONNECTOR_URL"
+
+echo "Waiting for prom to be up..."
+wait_for "$PROM_URL"
 
 
 START_TIME=$(date +"%s")

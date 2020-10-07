@@ -1,3 +1,4 @@
+-- created these manually on remote nodes
 DO $$
     BEGIN
         CREATE ROLE prom_reader;
@@ -6,6 +7,7 @@ DO $$
         RETURN;
     END
 $$;
+
 DO $$
     BEGIN
         CREATE ROLE prom_writer;

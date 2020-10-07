@@ -83,17 +83,18 @@ BEGIN
             CONTINUE;
         END IF;
 
-        IF SCHEMA_CATALOG.is_timescaledb_installed() THEN
-            EXECUTE format($$
-                ALTER TABLE SCHEMA_DATA.%I SET (
-                    timescaledb.compress,
-                    timescaledb.compress_segmentby = 'series_id',
-                    timescaledb.compress_orderby = 'time, value'
-                ); $$, r.table_name);
+        -- cannot compress distributed hts
+        -- IF SCHEMA_CATALOG.is_timescaledb_installed() THEN
+        --     EXECUTE format($$
+        --         ALTER TABLE SCHEMA_DATA.%I SET (
+        --             timescaledb.compress,
+        --             timescaledb.compress_segmentby = 'series_id',
+        --             timescaledb.compress_orderby = 'time, value'
+        --         ); $$, r.table_name);
 
-            --chunks where the end time is before now()-1 hour will be compressed
-            PERFORM add_compress_chunks_policy(format('SCHEMA_DATA.%I', r.table_name), INTERVAL '1 hour');
-        END IF;
+        --     --chunks where the end time is before now()-1 hour will be compressed
+        --     PERFORM add_compression_policy(format('SCHEMA_DATA.%I', r.table_name), INTERVAL '1 hour');
+        -- END IF;
 
         --do this before taking exclusive lock to minimize work after taking lock
         UPDATE SCHEMA_CATALOG.metric SET creation_completed = TRUE WHERE id = r.id;
@@ -134,7 +135,7 @@ BEGIN
                     NEW.id, NEW.table_name);
 
    IF SCHEMA_CATALOG.is_timescaledb_installed() THEN
-        PERFORM create_hypertable(format('SCHEMA_DATA.%I', NEW.table_name), 'time',
+        PERFORM create_distributed_hypertable(format('SCHEMA_DATA.%I', NEW.table_name), 'time',
                              chunk_time_interval=>SCHEMA_CATALOG.get_staggered_chunk_interval(SCHEMA_CATALOG.get_default_chunk_interval()),
                              create_default_indexes=>false);
     END IF;
